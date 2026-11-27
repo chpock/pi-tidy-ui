@@ -14,8 +14,13 @@ been reconstructed.
 
 ### Changed
 
-- Leave a blank row after each group in Status & troubleshooting, including
-  directly above Back, when the popup is tall enough.
+- Open Display cache and Layout cache activity directly from Status &
+  troubleshooting. Replace raw JSON with tables, readable memory sizes, and
+  labeled values in narrow windows. Update the tables while open without a
+  manual refresh. Show how many layouts Clear removed, even after they rebuild.
+
+- Leave a blank row above Back in Status & troubleshooting and Diagnostic logs,
+  and between groups in Status & troubleshooting, when the popup is tall enough.
 - Separate diagnostic information from menu choices with a blank row. Show
   success and failure in the selected item’s single hint row until you navigate,
   without adding rows to the popup.

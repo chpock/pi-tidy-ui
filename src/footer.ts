@@ -208,5 +208,10 @@ export class FooterView implements Component {
     return this.rows ? layoutMemory(this.rows) : { retainedBytes: 0, stringBytes: 0, overheadBytes: 0, entries: 0, rows: 0 };
   }
   invalidate(): void { if (this.rows) diagnose(this.diagnostic, 'DEBUG', 'footer', 'Existing footer layout invalidated'); this.rows = undefined; }
-  clear(): void { if (this.rows || this.data) diagnose(this.diagnostic, 'DEBUG', 'footer', 'Footer snapshots and layout cleared'); this.rows = undefined; this.data = undefined; this.theme = undefined; this.statuses = []; }
+  clear(): number {
+    const cleared = this.rows ? 1 : 0;
+    if (this.rows || this.data) diagnose(this.diagnostic, 'DEBUG', 'footer', 'Footer snapshots and layout cleared');
+    this.rows = undefined; this.data = undefined; this.theme = undefined; this.statuses = [];
+    return cleared;
+  }
 }

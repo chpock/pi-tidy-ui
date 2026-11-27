@@ -18,7 +18,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: queued cards adapt
       terminal.send('\x1b[121;7u');
       if (!terminal.queuedNative) {
         if (action === 'on' || action === 'off') await terminal.appearance(action === 'on', { alreadyOpen: true, leaveOpen: true });
-        await terminal.cacheSnapshot(action === 'cache clear', { alreadyOpen: true, refreshAfterClear: true,
+        await terminal.cacheSnapshot(action === 'cache clear', { alreadyOpen: true,
           beforeClose: stats => writeFileSync(join(terminal.output, `${name}-menu-stats.json`), JSON.stringify(stats)) });
       }
       const dump = await terminal.waitForProgress(() => {

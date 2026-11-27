@@ -104,10 +104,37 @@ test('geometry cache: dead-entry sweeping releases detached credit before delaye
   weak.ownership.entry = undefined;
   await collect(weak.entry); await collect(weak.painted); await collect(weak.payload);
   assert.ok(budget.stats().retainedBytes > 0, 'the delayed registry still holds numeric ownership');
+  const before = cache!.stats();
+  assert.equal(before.entries, 1, 'readonly statistics reflect observed releases, not a hidden weak record scan');
+  assert.equal(before.collected, 0);
+  assert.ok(budget.stats().retainedBytes > 0, 'requesting statistics does not release detached credit');
+  cache!.reconcileCollected();
   assert.equal(cache!.stats().entries, 0); assert.equal(budget.stats().retainedBytes, 0);
   for (const callback of pending) callback();
   assert.equal(cache!.stats().releases, 1); assert.equal(cache!.stats().collected, 1);
-  cache!.clear(); assert.equal(budget.stats().retainedBytes, 0);
+  assert.equal(cache!.clear(), 0); assert.equal(budget.stats().retainedBytes, 0);
+});
+
+test('clear counts only live layouts, separately from entries already collected', async () => {
+  const Original = globalThis.FinalizationRegistry;
+  class DeferredRegistry<T> extends Original<T> {
+    constructor(_callback: (held: T) => void) { super(() => {}); }
+  }
+  let cache: RenderCache;
+  globalThis.FinalizationRegistry = DeferredRegistry;
+  try { cache = new RenderCache(); } finally { globalThis.FinalizationRegistry = Original; }
+  const keep = cache.put(['live'], ['live']);
+  const forget = () => new WeakRef(cache.put(['dead'], ['dead']));
+  const dead = forget();
+  await collect(dead);
+  assert.equal(cache.clear(), 1);
+  assert.equal(keep.value, undefined);
+  const stats = cache.stats();
+  assert.equal(stats.entries, 0);
+  assert.equal(stats.builds, 2);
+  assert.equal(stats.releases, 2);
+  assert.equal(stats.collected, 1);
+  assert.equal(cache.clear(), 0);
 });
 
 for (const throws of [false, true]) test(`geometry cache: drop inside pinned output visitor preserves credit through unwind (throws=${throws})`, () => {

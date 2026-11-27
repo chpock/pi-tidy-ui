@@ -29,8 +29,12 @@ export class PresentationCacheOwner {
       })) as Record<LayoutKind, LayoutMemory> };
   }
 
-  clear(): void {
-    this.ordinary.clear();
-    this.cards.clear();
+  reconcileCollected(): void {
+    this.ordinary.reconcileCollected();
+    this.cards.reconcileCollected();
+  }
+
+  clear(): number {
+    return this.ordinary.clear() + this.cards.clear();
   }
 }

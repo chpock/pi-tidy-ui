@@ -14,6 +14,7 @@ import { readInputs, childEnv, toolPath } from '../../scripts/test/context.mjs';
 import { planTerminalObserver } from './terminal-observer-plan.mjs';
 import { planPerformanceLayout } from './performance-layout-plan.mjs';
 import { terminalCodeCache } from './terminal-code-cache.mjs';
+import { observedCacheLayouts, observedCacheActivity, observedClearResult } from './cache-menu-observation.ts';
 import { selectPreparations, completedPreparations } from './card-preparation.mjs';
 
 const { Terminal } = xterm;
@@ -401,13 +402,15 @@ export class PiTerminal {
         if (!activate) return row;
         const before = row;
         this.send('\r');
-        const pages = ['Code color theme', 'Status & troubleshooting', 'Highlighting service details', 'Diagnostic logs', 'Display cache'];
+        const pages = ['Code color theme', 'Status & troubleshooting', 'Highlighting service details', 'Diagnostic logs',
+          'Display cache', 'Layout cache activity'];
         if (pages.includes(label)) await until(async () => {
           await this.refreshTidyBounds();
           const rows = this.tidyRows(), selected = rows.find(line => line.startsWith('→ ')) ?? '';
           const first = { 'Status & troubleshooting': 'Reapply Tidy UI appearance', 'Highlighting service details': 'Back',
-            'Diagnostic logs': 'Record diagnostic logs', 'Display cache': 'Refresh statistics' }[label];
+            'Diagnostic logs': 'Record diagnostic logs', 'Display cache': 'Clear saved layouts', 'Layout cache activity': 'Back' }[label];
           const prefix = selected.slice(2).split('…')[0].split(/ {2,}/u)[0].trimEnd();
+          if (this.tidyHeading(label) && (label === 'Display cache' || label === 'Layout cache activity')) return true;
           return (this.tidyHeading(label) || this.menuBounds && !this.tidyFrame()) && !rows.some(line => line.includes('Loading saved code theme')) &&
             (first ? prefix && first.startsWith(prefix) : selected.includes('Follow Pi') || selected.endsWith('Selected'));
         }, `popup page ${label}`);
@@ -444,7 +447,8 @@ export class PiTerminal {
               return choice?.kind === (label === 'Follow Pi theme' ? 'pi' : 'theme');
             } catch { return false; }
           }
-          return rows.some(line => /Done\.|Status refreshed\.|Cache statistics refreshed\./u.test(line));
+          if (label === 'Clear saved layouts') return observedClearResult(rows) !== undefined;
+          return rows.some(line => /Done\.|Status refreshed\./u.test(line));
         }, `popup action ${label}`);
         await this.refreshTidyBounds();
         return;
@@ -500,42 +504,61 @@ export class PiTerminal {
       if (row.endsWith(enabled ? 'Off' : 'On')) await this.selectTidyItem('Record diagnostic logs');
     } finally { await this.closeTidyMenu(); }
   }
-  async cacheSnapshot(clear = false, { alreadyOpen = false, beforeClose, refreshAfterClear = false } = {}) {
+  async cacheSnapshot(clear = false, { alreadyOpen = false, beforeClose } = {}) {
     if (alreadyOpen) await until(() => this.tidyHeading('Tidy UI'), 'shortcut opened cache popup');
     else await this.openTidyMenu();
     try {
       await this.selectTidyItem('Status & troubleshooting'); await this.selectTidyItem('Display cache');
+      let clearedLayouts;
       if (clear) {
         await this.selectTidyItem('Clear saved layouts');
-        await until(() => this.tidyRows().some(row => row.startsWith('Saved layouts: 0;')), 'zero-layout clear receipt in public popup');
+        clearedLayouts = observedClearResult(await this.completeTidyRows());
+        assert.ok(clearedLayouts !== undefined, 'an explicit Clear receipt is visible');
+        this.captureScreen('tidy-cache-cleared', { clearedLayouts });
       }
-      if (clear && refreshAfterClear) await this.selectTidyItem('Refresh statistics');
-      let combined = [], previous = []; const observations = [];
-      // The frozen snapshot is finite; stop at its marker or fail on a stalled viewport.
-      for (;;) {
-        const rows = await this.completeTidyRows(), start = rows.indexOf('Display cache') + 2;
-        const end = rows.findIndex(row => /^(?:→ |  )(?:Refresh statistics|Clear saved layouts|Back)/u.test(row));
-        assert.ok(start > 0 && end > start, `public cache detail region is visible: ${JSON.stringify(rows)}`);
-        const current = rows.slice(start, end);
-        let overlap = Math.min(previous.length, current.length);
-        while (overlap && JSON.stringify(previous.slice(-overlap)) !== JSON.stringify(current.slice(0, overlap))) overlap--;
-        combined.push(...current.slice(overlap)); previous = current;
-        observations.push({ current, overlap, rendering: this.rendering, completedRenders: this.completedRenders, chunks: this.raw?.length });
-        const begin = combined.indexOf('Diagnostic JSON:'), finish = combined.indexOf('End diagnostic JSON');
-        if (begin >= 0 && finish > begin) {
-          let result;
-          try { result = JSON.parse(combined.slice(begin + 1, finish).join('')); }
-          catch (error) {
-            writeFileSync(join(this.output, 'cache-json-parse-failure.json'), JSON.stringify({ combined, observations }, null, 2));
-            this.captureScreen('cache-json-parse-failure', {}); throw error;
-          }
-          if (clear) this.captureScreen('tidy-cache-cleared', { cacheSnapshot: result });
-          beforeClose?.(result); return result;
-        }
-        this.send('\x1b[6~');
-        await until(async () => JSON.stringify((await this.completeTidyRows()).slice(start, end)) !== JSON.stringify(current), 'scroll public cache details');
-      }
+      const backToStatus = async () => {
+        this.send('\x1b');
+        await until(async () => {
+          await this.completeTidyRows();
+          return this.tidyHeading('Status & troubleshooting');
+        }, 'return to troubleshooting from the cache details');
+      };
+      if (clear) { await backToStatus(); await this.selectTidyItem('Display cache'); }
+      const layouts = observedCacheLayouts(await this.readCacheDetailRows('Display cache', /cache\)\.$/u));
+      await backToStatus();
+      await this.selectTidyItem('Layout cache activity');
+      const activity = await this.readCacheDetailRows('Layout cache activity', /layout\.$/u);
+      const result = { ...layouts, ...observedCacheActivity(activity), ...(clear ? { clearedLayouts } : {}) };
+      beforeClose?.(result); return result;
     } finally { await this.closeTidyMenu(); }
+  }
+  async readCacheDetailRows(title, lastLine) {
+    const visibleDetails = rows => {
+      const firstChoice = title === 'Display cache' ? /^(?:→ | {2})Clear saved layouts$/u : /^(?:→ | {2})Back$/u;
+      const start = rows.indexOf(title) + 2, end = rows.findIndex(row => firstChoice.test(row));
+      assert.ok(start > 1 && end > start, `public ${title} details and choices are visible`);
+      const details = rows.slice(start, end);
+      if (details.at(-1) === '') details.pop();
+      return details;
+    };
+    const collected = [];
+    let page = visibleDetails(await this.completeTidyRows());
+    for (;;) {
+      collected.push(...page);
+      if (page.some(row => lastLine.test(row))) return collected;
+      const previous = page;
+      this.send('\x1b[6~');
+      page = await until(async () => {
+        const next = visibleDetails(await this.completeTidyRows());
+        return JSON.stringify(next) !== JSON.stringify(previous) && next;
+      }, `page through ${title}`);
+      // Only the last page can overlap the previous page: the scroll offset clamps at the end.
+      if (page.some(row => lastLine.test(row))) {
+        let overlap = Math.min(previous.length, page.length);
+        while (overlap > 0 && JSON.stringify(previous.slice(-overlap)) !== JSON.stringify(page.slice(0, overlap))) overlap--;
+        return collected.concat(page.slice(overlap));
+      }
+    }
   }
   async captureSettled(name, { action, signal, screen = true } = {}) {
     const controller = new AbortController();

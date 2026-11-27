@@ -1,10 +1,13 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { menuRows, menuAction, menuThemeChoice, menuSnapshot, menuDetails, menuCacheDetails, menuPageTitle, menuNavigation } from '../../../src/application/menu-model.ts';
+import { menuRows, menuAction, menuThemeChoice, menuSnapshot, menuDetails, menuPageTitle, menuNavigation } from '../../../src/application/menu-model.ts';
 import type { TidyMenuSnapshot, TidyMenuPage, TidyMenuCommandIntent } from '../../../src/application/menu-contract.ts';
 import type { SyntaxMenuSnapshot } from '../../../src/application/syntax-menu.ts';
-import type { CacheStats } from '../../../src/render-cache.ts';
+import { cacheMenuDetails } from '../../../src/application/cache-menu.ts';
+import { layoutMemory } from '../../../src/render-cache.ts';
+import { cacheMenuSample } from '../../fixtures/cache-menu-sample.ts';
+import { observedCacheLayouts, observedCacheActivity } from '../../fixtures/cache-menu-observation.ts';
 
 const view = { themeLoading: false, themeLoadFailed: false };
 const preferences = () => ({ appearanceEnabled: true, terminalColorsEnabled: true, nativeHighlightingEnabled: true, loggingEnabled: true,
@@ -18,7 +21,7 @@ function syntaxSnapshot(): SyntaxMenuSnapshot {
 
 test('fixed page rows have unique stable widget values and closed data intentions', () => {
   const snapshot = state();
-  const counts: Record<TidyMenuPage, number> = { root: 6, themes: 34, support: 8, service: 1, logs: 4, cache: 3 };
+  const counts: Record<TidyMenuPage, number> = { root: 6, themes: 34, support: 9, service: 1, logs: 4, cache: 2, cacheActivity: 1 };
   const kinds = new Set(['toggle', 'toggleVariant', 'choosePi', 'chooseFamily', 'maintain', 'navigate', 'back', 'close', 'refreshStatus', 'refreshCache']);
   for (const [page, count] of Object.entries(counts) as [TidyMenuPage, number][]) {
     const rows = menuRows(page, snapshot, view);
@@ -124,36 +127,61 @@ test('status projections retain unknown-palette, loading, failure and owner-remo
   assert.equal(support.includes('Runtime errors: 3; active: 1'), true);
   assert.equal(support.includes('Last runtime error: transport_closed; 2026-11-12T00:00:00.000Z; owner removed; not a confirmed recovery'), true);
   assert.equal(menuDetails('service', snapshot, view).some(row => row.startsWith('Runtime errors:')), false);
-  const receipt = ['Frozen layout receipt'];
-  assert.equal(menuDetails('cache', snapshot, { ...view, cache: receipt }), receipt);
   assert.deepEqual(menuDetails('root', snapshot, view), []);
 });
 
-function cacheStats(): CacheStats {
-  const memory = () => ({ retainedBytes: 100, stringBytes: 80, overheadBytes: 20, entries: 1, rows: 2 });
-  return { retainedBytes: 700, stringBytes: 560, overheadBytes: 140, entries: 7, rows: 14,
-    hits: 4, misses: 7, builds: 7, releases: 1, collected: 1,
-    byKind: { summary: memory(), bash: memory(), edit: memory(), write: memory(), read: memory(), user: memory(), queued: memory() } };
-}
+test('cache screens start with their tables, with scope notes below the rows', () => {
+  const snapshot = cacheMenuSample();
+  const layouts = cacheMenuDetails('cache', snapshot, 96), activity = cacheMenuDetails('cacheActivity', snapshot, 96);
+  assert.match(layouts[0]!, /^Type\s+Layouts\s+Rows\s+Est\. size$/u);
+  assert.match(activity[0]!, /^\s*Total\s+Tool cards\s+Other layouts$/u);
+  assert.ok(layouts.findIndex(row => row.includes('model prompt cache')) > layouts.findIndex(row => row.startsWith('Queued messages')));
+  assert.ok(activity.findIndex(row => row.includes('Footer not counted')) > activity.findIndex(row => row.startsWith('Of those, collected by GC')));
+  assert.doesNotMatch([...layouts, ...activity].join('\n'), /Snapshot · Refresh to update/u);
+});
 
-test('cache projection preserves summed layout/footer counters and one space-escaped diagnostic JSON receipt', () => {
-  assert.deepEqual(menuCacheDetails(), ['No active display cache.']);
-  const stats = cacheStats(), footer = { retainedBytes: 25, entries: 1, rows: 1 };
-  const before = structuredClone({ stats, footer });
-  const lines = menuCacheDetails({ stats, footer, heapUsedBytes: 123456 });
-  assert.equal(lines[0], 'Saved layouts: 8; rows: 15');
-  assert.equal(lines[1], 'Estimated retained memory: 725 bytes');
-  assert.equal(lines.includes('Whole Pi process heap: 123456 bytes (not Tidy UI memory)'), true);
-  const json = lines[lines.indexOf('Diagnostic JSON:') + 1]!;
-  assert.equal(json.includes(' '), false, 'diagnostic JSON must survive native column wrapping without embedded literal spaces');
-  const parsed = JSON.parse(json);
-  assert.equal(parsed.presentationRetainedBytes, 725); assert.equal(parsed.presentationEntries, 8); assert.equal(parsed.presentationRows, 15);
-  assert.equal(parsed.retainedBytes, 700); assert.equal(parsed.processHeapUsedBytes, 123456);
-  assert.equal(parsed.processMemoryScope, 'whole Pi process, not pi-tidy-ui');
-  assert.deepEqual(parsed.footerLayout, footer); assert.deepEqual(parsed.byKind, stats.byKind);
-  assert.equal(lines.at(-1), 'End diagnostic JSON');
-  assert.deepEqual({ stats, footer }, before);
-  assert.equal(menuCacheDetails({ stats, heapUsedBytes: 0 }).includes('Footer: {"retainedBytes":0,"entries":0,"rows":0}'), true);
+for (const [bytes, display] of [
+  [0, '0 KiB'], [1, '0.000977 KiB'], [512, '0.5 KiB'], [1024, '1 KiB'], [123456, '120.6 KiB'],
+  [1048575, '1024 KiB'], [1048576, '1 MiB'], [1610612736, '1.5 GiB'],
+] as const) test(`cache sizes use binary units and four-digit precision: ${bytes} bytes`, () => {
+  const snapshot = { ...cacheMenuSample(0), heapUsedBytes: bytes };
+  const details = cacheMenuDetails('cache', snapshot, 96);
+  assert.ok(details.includes(`Whole Pi JS heap: ${display} (not the display cache).`));
+  assert.match(details.find(row => row.startsWith('Total'))!, /0 KiB$/u);
+  assert.ok(details.includes('Estimated text: 0 KiB'));
+  assert.ok(details.includes('Estimated bookkeeping: 0 KiB'));
+});
+
+test('cache screens preserve exact counts in wide and narrow presentations without exposing JSON', () => {
+  const snapshot = { ...cacheMenuSample(), footer: layoutMemory(['Footer content']) };
+  const before = structuredClone(snapshot);
+  for (const width of [96, 36]) {
+    const layouts = cacheMenuDetails('cache', snapshot, width), activity = cacheMenuDetails('cacheActivity', snapshot, width);
+    const detail = observedCacheLayouts(layouts);
+    assert.equal(detail.presentationEntries, 3);
+    assert.equal(detail.presentationRows, 3);
+    assert.doesNotMatch(layouts.join('\n'), /Cache hits/u);
+    assert.ok(Math.abs(detail.presentationRetainedBytes - (snapshot.stats.retainedBytes + snapshot.footer.retainedBytes)) < 0.512,
+      'the displayed total is within half of the last decimal of 1.770 KiB');
+    assert.equal(detail.footerLayout?.entries, 1);
+    assert.ok(layouts.includes('Whole Pi JS heap: 120.6 KiB (not the display cache).'));
+    assert.match(layouts.join('\n'), /not the display cache/u);
+    assert.equal(observedCacheActivity(activity).builds, 2, 'footer is excluded from every work counter');
+    assert.doesNotMatch([...layouts, ...activity].join('\n'), /retainedBytes|\{/u);
+  }
+  assert.deepEqual(snapshot, before);
+});
+
+test('missing cache, inactive cache and unowned footer are not interchangeable with zero', () => {
+  assert.match(cacheMenuDetails('cache', undefined, 96).join('\n'), /unavailable/u);
+  const snapshot = { ...cacheMenuSample(0), active: false };
+  const rows = cacheMenuDetails('cache', snapshot, 96);
+  assert.match(rows.join('\n'), /inactive/u);
+  assert.equal(observedCacheLayouts(rows).presentationEntries, 0);
+  assert.equal(observedCacheLayouts(rows).footerLayout, undefined);
+  const footer = { entries: 0, rows: 0, retainedBytes: 0, stringBytes: 0, overheadBytes: 0 };
+  assert.deepEqual(observedCacheLayouts(cacheMenuDetails('cache', { ...snapshot, footer }, 96)).footerLayout,
+    { entries: 0, rows: 0, retainedBytes: 0 });
 });
 
 test('page titles and native keyboard help retain their fixed wording', () => {
@@ -163,8 +191,9 @@ test('page titles and native keyboard help retain their fixed wording', () => {
   assert.equal(menuPageTitle('service'), 'Highlighting service details');
   assert.equal(menuPageTitle('logs'), 'Diagnostic logs');
   assert.equal(menuPageTitle('cache'), 'Display cache');
+  assert.equal(menuPageTitle('cacheActivity'), 'Layout cache activity');
   assert.equal(menuNavigation('root'), '↑↓ Navigate · Enter Select · Esc Close');
-  for (const page of ['themes', 'support', 'service', 'logs', 'cache'] as const)
+  for (const page of ['themes', 'support', 'service', 'logs', 'cache', 'cacheActivity'] as const)
     assert.equal(menuNavigation(page), '↑↓ Navigate · Enter Select · Esc Back');
 });
 

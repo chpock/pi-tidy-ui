@@ -12,7 +12,7 @@ test('disabled variant pointer gestures keep focus and confirmed preferences unc
   const state: TidyMenuSnapshot = { appearanceEnabled: true, terminalColorsEnabled: false, nativeHighlightingEnabled: false,
     loggingEnabled: true, selected: { kind: 'pi', variant: 'dark' }, appearance: 'Active', terminalColors: 'Off' };
   const owner: TidyMenuOwner = { snapshot: () => state, readSessionName: () => undefined, prepareThemes: async () => {}, previewTheme() {},
-    act: async action => { calls.push(action); return { ok: true }; }, cacheDetails: () => [] };
+    act: async action => { calls.push(action); return { ok: true }; }, cacheDetails: () => undefined };
   const menu = new TidyMenu(owner, colors as any, () => {}, () => {}, () => 24);
   const render = () => menu.render(70).map(plain);
   const rows = render(), before = rows.find(row => row.includes('→ Code color theme'));

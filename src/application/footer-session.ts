@@ -32,7 +32,7 @@ export class FooterSession {
   }
   defer(slot: NativeFooterSlot): void { this.pending = slot; }
   cancelDeferred(): void { this.pending = undefined; }
-  clearLayouts(): void { this.owned?.clear(); }
+  clearLayouts(): number { return this.owned?.clear() ?? 0; }
   retainedMemory() { return this.owned?.retainedMemory(); }
 
   restore(): void {

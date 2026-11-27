@@ -18,7 +18,7 @@ export interface MenuActionCapabilities {
   reapplyTerminalColors(): void;
   confirmTheme(choice: ThemePreference): Promise<MenuThemeConfirmation>;
   /** Capture the receipt synchronously, before a scheduled repaint can rebuild layouts. */
-  clearLayouts(): string[] | undefined;
+  clearLayouts(): number | undefined;
   recording: { retry(): Promise<MenuRecordingRetry>; writeSnapshot(): Promise<MenuSnapshotWrite> };
 }
 
@@ -41,8 +41,8 @@ export async function performMenuAction(action: TidyMenuAction, c: MenuActionCap
       return { ok: false, message: 'Turn on appearance and terminal color matching first.' };
     c.reapplyTerminalColors();
   } else if (action.kind === 'clearCache') {
-    const cache = c.clearLayouts();
-    return cache === undefined ? { ok: false, message: 'There are no active Tidy UI layouts to clear.' } : { ok: true, cache };
+    const clearedLayouts = c.clearLayouts();
+    return clearedLayouts === undefined ? { ok: false, message: 'There are no active Tidy UI layouts to clear.' } : { ok: true, clearedLayouts };
   } else if (action.kind === 'retryLogging') {
     const outcome = await c.recording.retry();
     if (outcome === 'unavailable') return { ok: false, message: 'Turn on diagnostic recording first.' };

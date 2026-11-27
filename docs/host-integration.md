@@ -180,8 +180,8 @@ Actions borrow that currentness predicate and shared-switch save signal; they do
 | Terminal matching Off | Stop owned default-color application; while appearance is active, finite concrete-color sampling can still support local card calculations |
 | Native highlighting Off | Stop native work under the source-authority contract; do not stop a separately managed shared daemon or pretend uncertain old requests never executed |
 | Capture Off | Close/disable file capture, not runtime-health state or presentation |
-| Refresh status / cache statistics | Read existing state/counters, not reclassify sources or retry a provider |
-| Clear saved layouts | Release presentation retention and capture the receipt before repaint; leave conversation/native syntax data alone |
+| Refresh status / visible cache-page sampling | Read existing state or maintained layout counters, not reconcile GC, reclassify sources or retry a provider |
+| Clear saved layouts | Count and release live presentation layouts before repaint; show the count separately from current statistics and leave conversation/native syntax data alone |
 
 Explicit On/Reapply differs from automatic restoration and cleanup. A later footer owner's disposal of Toolview's footer clears Toolview's ownership record; a subsequent explicit action may call public `setFooter` again when the stock editor is eligible. Delayed automatic installation and cleanup still preserve later owners. See [footer ownership](footer-spec.md#scope-and-ownership).
 

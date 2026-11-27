@@ -8,6 +8,7 @@ import { EventEmitter } from 'node:events';
 import xterm from '@xterm/headless';
 import { PiTerminal, observeRenderFrames } from '../fixtures/terminal-harness.mjs';
 import { compareEditReplayColors } from '../fixtures/edit-replay-comparator.mjs';
+import { observedCacheActivity, observedCacheLayouts } from '../fixtures/cache-menu-observation.ts';
 
 const { Terminal } = xterm;
 
@@ -141,47 +142,64 @@ for (const width of [39, 58, 72]) test(`CLI popup geometry observes ${width}-col
   assert.deepEqual(terminal.tidyRows(), ['', '→ Code color theme', '']);
 });
 
-test('CLI cache JSON reader follows more than 100 public detail pages without truncation', async () => {
-  const terminal = Object.create(PiTerminal.prototype), expected = Array.from({ length: 160 }, (_, value) => ({ value }));
-  const details = ['Diagnostic JSON:', '[', ...expected.map((value, index) => JSON.stringify(value) + (index + 1 < expected.length ? ',' : '')), ']', 'End diagnostic JSON'];
-  let offset = 0, closed = 0; const selected = [];
-  terminal.openTidyMenu = async () => {};
-  terminal.selectTidyItem = async label => { selected.push(label); };
-  terminal.closeTidyMenu = async () => { closed++; };
-  terminal.tidyRows = () => ['Display cache', '', details[offset], '→ Refresh statistics'];
-  terminal.send = data => { assert.equal(data, '\x1b[6~'); offset = Math.min(details.length - 1, offset + 1); };
-  assert.deepEqual(await terminal.cacheSnapshot(), expected);
-  assert.ok(offset > 100); assert.equal(closed, 1);
-  assert.deepEqual(selected, ['Status & troubleshooting', 'Display cache']);
+test('cache detail reader keeps all visible rows when the last short viewport overlaps', async () => {
+  const terminal = Object.create(PiTerminal.prototype);
+  const details = ['Type', 'Compact tool summaries', '  Layouts: 7', '  Rows: 8', '  Est. size: 900 B', 'Whole Pi JS heap: 4,800 B (not the display cache).'];
+  let offset = 0;
+  terminal.completeTidyRows = async () => ['Display cache', '', ...details.slice(offset, offset + 4), '', '  Clear saved layouts', '→ Back'];
+  terminal.send = data => { assert.equal(data, '\x1b[6~'); offset = Math.min(details.length - 4, offset + 4); };
+  assert.deepEqual(await terminal.readCacheDetailRows('Display cache', /not the display cache/u), details);
+  assert.equal(offset, 2);
 });
 
-test('CLI cache JSON reader waits for synchronized render completion instead of parsing a half-painted viewport', async () => {
+test('visible size totals permit rounding, but reject a missing layout or an incorrect size', () => {
+  const rows = ['Total  2  2  1.999 MiB', 'Compact tool summaries  1  1  1023 KiB',
+    'Bash cards  1  1  1 MiB', 'Read cards  0  0  0 KiB', 'Edit cards  0  0  0 KiB', 'Write cards  0  0  0 KiB',
+    'User messages  0  0  0 KiB', 'Queued messages  0  0  0 KiB', 'Tidy UI footer: Not owned by Tidy UI.',
+    'Estimated text: 1 MiB', 'Estimated bookkeeping: 1023 KiB', 'Whole Pi JS heap: 23 MiB (not the display cache).'];
+  assert.equal(observedCacheLayouts(rows).presentationEntries, 2);
+  assert.throws(() => observedCacheLayouts(['Total  1  2  1.999 MiB', ...rows.slice(1)]), /Total entries/u);
+  assert.throws(() => observedCacheLayouts(['Total  2  2  1.989 MiB', ...rows.slice(1)]), /Total estimated size by layout type/u);
+});
+
+test('cache counter reader preserves exact values when a narrow frame wraps a label', () => {
+  const lines = ['Cache hits', '  Total: 19', '  Tool cards: 7', '  Other layouts: 12',
+    'Cache misses', '  Total: 13', '  Tool cards: 6', '  Other layouts: 7',
+    'Layouts built', '  Total: 11', '  Tool cards: 5', '  Other layouts: 6',
+    'Layouts released', '  Total: 8', '  Tool cards: 3', '  Other layouts: 5',
+    'Of those, collected by', 'GC', '  Total: 3', '  Tool cards: 1', '  Other layouts: 2'];
+  const stats = observedCacheActivity(lines);
+  assert.equal(stats.collected, 3);
+  assert.equal(stats.cards.collected, 1);
+  assert.equal(stats.ordinary.collected, 2);
+});
+
+test('cache detail reader waits for a complete synchronized terminal frame before reading numbers', async () => {
   const terminal = Object.create(PiTerminal.prototype);
-  terminal.term = new Terminal({ cols: 39, rows: 12, allowProposedApi: true });
+  terminal.term = new Terminal({ cols: 58, rows: 12, allowProposedApi: true });
   observeRenderFrames(terminal.term, terminal);
   terminal.queue = Promise.resolve();
   const write = text => terminal.queue = new Promise(done => terminal.term.write(text, done));
-  const body = text => '│' + text.padEnd(37) + '│';
-  const rows = ['╭' + '─'.repeat(37) + '╮', body('Display cache'), '├' + '─'.repeat(37) + '┤',
-    body('Diagnostic JSON:'), body('{"answer":1}{"stale":2}'), body('End diagnostic JSON'), body('→ Refresh statistics'),
-    body(''), body('Read current cache counters.'), '├' + '─'.repeat(37) + '┤', body('Esc Back · PgUp/PgDn'), '╰' + '─'.repeat(37) + '╯'];
-  terminal.openTidyMenu = terminal.selectTidyItem = terminal.closeTidyMenu = async () => {};
-  let unsafeReads = 0, closed = 0, outcome;
-  terminal.closeTidyMenu = async () => { closed++; };
-  terminal.captureScreen = () => {};
+  const body = text => '│' + text.padEnd(56) + '│';
+  const rows = ['╭' + '─'.repeat(56) + '╮', body('Display cache'), '├' + '─'.repeat(56) + '┤',
+    body('Queued messages  7001(stale)'), body('Whole Pi JS heap: 4,800 B (not the display cache).'), body(''), body('→ Clear saved layouts'),
+    body(''), body('Return to the previous page.'), '├' + '─'.repeat(56) + '┤', body('Esc Back'), '╰' + '─'.repeat(56) + '╯'];
+  let unsafeReads = 0, outcome;
   terminal.tidyRows = () => { if (terminal.rendering) unsafeReads++; return PiTerminal.prototype.tidyRows.call(terminal); };
   await write('\x1b[?2026h\x1b[H' + rows.join('\r\n'));
-  assert.equal(terminal.rendering, true, 'the actual emulator has parsed Begin Synchronized Output but not End');
-  const pending = terminal.cacheSnapshot().then(value => { outcome = { value }; }, error => { outcome = { error }; });
+  assert.equal(terminal.rendering, true, 'the emulator has parsed Begin Synchronized Output but not End');
+  const pending = terminal.readCacheDetailRows('Display cache', /not the display cache/u)
+    .then(value => { outcome = { value }; }, error => { outcome = { error }; });
   try {
     await new Promise(setImmediate);
-    assert.equal(unsafeReads, 0, 'a syntactically invalid intermediate viewport must not be consumed as JSON');
-    assert.equal(outcome, undefined, 'the reader remains pending rather than accepting or rejecting partial output');
-    await write('\x1b[5;2H' + '{"answer":1}'.padEnd(37) + '\x1b[?2026l');
+    assert.equal(unsafeReads, 0);
+    assert.equal(outcome, undefined, 'the reader does not accept intermediate output');
+    const valid = 'Queued messages  7  8  900 B';
+    await write('\x1b[4;2H' + valid.padEnd(56) + '\x1b[?2026l');
     await pending;
     if (outcome.error) throw outcome.error;
-    assert.deepEqual(outcome.value, { answer: 1 });
-    assert.equal(unsafeReads, 0); assert.equal(terminal.completedRenders, 1); assert.equal(closed, 1);
+    assert.ok(outcome.value.includes(valid));
+    assert.equal(unsafeReads, 0); assert.equal(terminal.completedRenders, 1);
   } finally {
     if (terminal.rendering) await write('\x1b[?2026l');
     await pending; terminal.term.dispose();

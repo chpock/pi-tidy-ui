@@ -82,18 +82,23 @@ export class RenderCache {
     if (collected) this.collected++;
     cleanup?.release();
   }
-  clear() {
+  /** Return the number of live layouts removed, excluding already collected entries. */
+  clear(): number {
+    let cleared = 0;
     for (const record of this.records) {
       const entry = record.reference.deref();
-      if (entry) entry.value = undefined;
+      if (entry) { entry.value = undefined; cleared++; }
       this.releaseRecord(record, !entry);
     }
     this.accounting = new WeakMap();
+    return cleared;
   }
-  stats(): CacheStats {
-    // On demand only. Finalizers are eventual; a requested snapshot must exclude
-    // entries already collected even if their metadata callback has not run yet.
+  /** Reconcile dead entries before an exact diagnostic capture, never on a timer. */
+  reconcileCollected(): void {
     for (const record of this.records) if (!record.reference.deref()) this.releaseRecord(record, true);
+  }
+  /** Copy maintained counters without observing weak references or releasing anything. */
+  stats(): CacheStats {
     return { ...this.memory, hits: this.hits, misses: this.misses, builds: this.builds,
       releases: this.releases, collected: this.collected,
       byKind: Object.fromEntries(LAYOUT_KINDS.map(kind => [kind, { ...this.kinds[kind] }])) as Record<LayoutKind, LayoutMemory> };

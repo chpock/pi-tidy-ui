@@ -166,7 +166,7 @@ The next tool owns any required outside separator. An unchanged owned body can [
 
 ## Retention, accounting and pressure are different
 
-`RenderCache` in `src/render-cache.ts` is a weak accounting registry. Component state owns an entry and its value; the registry keeps only a weak entry reference, fixed presentation kind, numbers and a detached cleanup receipt. `drop` clears the entry value immediately and releases accounting/receipts once. Finalization cleans dead accounting; requested statistics also sweep dead weak references because finalizer timing is not guaranteed.
+`RenderCache` in `src/render-cache.ts` is a weak accounting registry. Component state owns an entry and its value; the registry keeps only a weak entry reference, fixed presentation kind, numbers and a detached cleanup receipt. `drop` clears the entry value immediately and releases accounting/receipts once. Finalization cleans dead accounting. Reading statistics copies the maintained counters and does not touch weak references or cleanup receipts. An explicit journal capture can reconcile dead entries before reading the counters; receipt release is idempotent if finalization arrives later.
 
 Two groups, `ordinary` and `cards`, attribute latest rendered layouts; neither imposes byte/count/recency eviction. They are not global strong row stores. The reason is Pi's repeated whole-document visitation: evicting still-live rows to fit a small global count makes the same long transcript rebuild on every visit. Component lifetime and replacement bound each individual retained body; a growing live transcript still grows retained presentation.
 

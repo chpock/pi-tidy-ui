@@ -11,6 +11,7 @@ import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { SyntaxRuntime } from '../../../src/application/syntax-runtime.ts';
 import { THEME_CATALOGUE, THEME_FAMILIES } from '../../../src/themes/catalogue.ts';
 import { observePaletteInput } from '../../fixtures/palette-input-observer.mjs';
+import { cacheMenuSample } from '../../fixtures/cache-menu-sample.ts';
 
 const colors = { fg: (_: string, text: string) => text, bold: (text: string) => text };
 const preference = (id: string, variant?: 'dark' | 'light') => {
@@ -27,12 +28,12 @@ function fixture(width = 70, height = 24, paint = colors) {
     calls.push(action);
     if (action.kind === 'switch') state[action.key] = action.value;
     if (action.kind === 'theme') state.selected = action.choice;
-    if (action.kind === 'clearCache') return { ok: true, cache: owner.cacheDetails() };
+    if (action.kind === 'clearCache') return { ok: true, clearedLayouts: 2 };
     return { ok: true };
   };
   const owner: TidyMenuOwner = { snapshot: () => state, readSessionName: () => undefined, prepareThemes: async () => { prepared++; },
     previewTheme(choice) { const copy = structuredClone(choice); previews.push(copy); state.selected = copy; },
-    act: action => perform(action), cacheDetails: () => { cacheReads++; return ['Cached layouts: 2', 'Estimated memory: 1 KiB']; } };
+    act: action => perform(action), cacheDetails: () => { cacheReads++; return cacheMenuSample(); } };
   const menu = new TidyMenu(owner, paint as any, () => { renderRequests++; }, () => { closed++; }, () => height);
   const render = () => menu.render(width).map(plain);
   const key = async (data: string) => { menu.handleInput(data); await turn(); render(); };
@@ -92,24 +93,80 @@ test('cache and log operations are behind support and remain explicit, not statu
   const f = fixture(); await f.select('Status & troubleshooting');
   await f.select('Display cache'); assert.equal(f.cacheReads, 1);
   await f.select('Clear saved layouts'); assert.deepEqual(f.calls, [{ kind: 'clearCache' }]);
-  assert.equal(f.cacheReads, 2);
+  assert.equal(f.cacheReads, 1, 'clear does not sample counters to infer its result');
   await f.key('\x1b'); await f.select('Diagnostic logs');
   await f.select('Write state snapshot'); assert.equal(f.calls.at(-1)?.kind, 'snapshotLogs');
 });
 
-test('clear receipt stays at zero when a native repaint rebuilds layouts before the action returns', async () => {
-  const f = fixture(); let layouts = 2;
-  f.owner.cacheDetails = () => [`Cached layouts: ${layouts}`];
+for (const first of ['Display cache', 'Layout cache activity']) test(`only visible cache pages read their own live statistics: ${first}`, async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = fixture(98, 36); let live = 2, reads = 0;
+  t.after(() => f.menu.dispose());
+  const other = first === 'Display cache' ? 'Layout cache activity' : 'Display cache';
+  const check = (page: string, count: number) => {
+    const screen = f.render().join('\n');
+    assert.equal(f.render()[1]!.slice(1, -1).trim(), page);
+    assert.match(screen, new RegExp(page === 'Display cache' ? `Total\\s+${count}\\s+${count}\\s+` : `Layouts built\\s+${count}\\s+0\\s+${count}`, 'u'));
+    assert.equal(/Clear saved layouts/u.test(screen), page === 'Display cache');
+    assert.doesNotMatch(screen, /Refresh statistics/u);
+    assert.equal(f.menu.preferredWidth(), 98);
+  };
+  f.owner.cacheDetails = () => { reads++; return cacheMenuSample(live); };
+  await f.select('Status & troubleshooting'); await f.select('Refresh status');
+  assert.equal(reads, 0, 'status does not sample the cache');
+  await f.select(first); check(first, 2); assert.equal(reads, 1);
+  live = 7;
+  await f.key('\x1b[6~'); t.mock.timers.tick(999);
+  check(first, 2); assert.equal(reads, 1);
+  t.mock.timers.tick(1); check(first, 7); assert.equal(reads, 2);
+  const paints = f.renderRequests;
+  t.mock.timers.tick(1000); assert.equal(reads, 3); assert.equal(f.renderRequests, paints, 'equal values need no repaint');
+  await f.select('Back');
+  assert.equal(f.render()[1]!.slice(1, -1).trim(), 'Status & troubleshooting');
+  t.mock.timers.tick(3000); assert.equal(reads, 3, 'Back stops sampling');
+  live = 3; await f.select(other); check(other, 3); assert.equal(reads, 4);
+  live = 8; t.mock.timers.tick(1000); check(other, 8); assert.equal(reads, 5);
+  f.menu.close(); t.mock.timers.tick(3000); assert.equal(reads, 5, 'close stops sampling');
+});
+
+test('unavailable cache recovers from a new live sample', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = fixture(98, 36); let reads = 0;
+  t.after(() => f.menu.dispose());
+  f.owner.cacheDetails = () => ++reads === 2 ? cacheMenuSample(4) : undefined;
+  await f.select('Status & troubleshooting'); await f.select('Display cache');
+  assert.match(f.render().join('\n'), /Display cache unavailable/u);
+  t.mock.timers.tick(1000);
+  assert.match(f.render().join('\n'), /Total\s+4\s+4/u);
+  await f.key('\x1b'); await f.select('Layout cache activity');
+  assert.match(f.render().join('\n'), /Layout cache activity unavailable/u);
+  assert.equal(reads, 3);
+});
+
+test('clear result remains visible as both pages show rebuilt layouts', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = fixture(98, 36); let layouts = 2;
+  t.after(() => f.menu.dispose());
+  f.owner.cacheDetails = () => cacheMenuSample(layouts);
   f.perform = async () => {
-    layouts = 0; const cache = f.owner.cacheDetails();
-    queueMicrotask(() => { layouts = 2; });
-    return { ok: true, cache };
+    const clearedLayouts = layouts; layouts = 0;
+    queueMicrotask(() => { layouts = 3; });
+    return { ok: true, clearedLayouts };
   };
   await f.select('Status & troubleshooting'); await f.select('Display cache');
+  const height = f.render().length;
   await f.select('Clear saved layouts');
-  assert.equal(layouts, 2, 'a later frame has rebuilt the live layouts');
-  assert.match(f.render().join('\n'), /Cached layouts: 0/);
-  assert.doesNotMatch(f.render().join('\n'), /Cached layouts: 2/);
+  t.mock.timers.tick(1000);
+  assert.match(f.render().join('\n'), /Total\s+3\s+3/u);
+  assert.equal(helpRows(f.render())[0], 'Cleared 2 layouts.');
+  assert.equal(f.render().length, height, 'success reuses the hint row');
+  await f.key('\x1b'); await f.select('Layout cache activity');
+  assert.match(f.render().join('\n'), /Layouts built\s+3\s+0\s+3/u);
+  assert.equal(helpRows(f.render())[0], 'Cleared 2 layouts.');
+  await f.key('\x1b'); await f.select('Display cache');
+  f.perform = async () => ({ ok: true, clearedLayouts: 0 });
+  await f.select('Clear saved layouts');
+  assert.equal(helpRows(f.render())[0], 'No saved layouts to clear.');
 });
 
 test('inline failure is bounded and remains visible after the operation; no raw error text', async () => {
@@ -392,9 +449,9 @@ test('Follow Pi remains a separate option from the fixed local palette catalogue
 
 for (const height of [5, 6]) for (const page of ['cache', 'logs'])
   test(`all ${page} details and Back stay accessible at 24x${height}`, async () => {
-    const f = fixture(24, height), markers = page === 'cache' ? Array.from({ length: 10 }, (_, i) => `CACHE_DETAIL_${i}`)
+    const f = fixture(24, height), markers = page === 'cache' ? ['Compact tool summaries', 'Bash cards', 'Read cards',
+      'Edit cards', 'Write cards', 'User messages', 'Queued messages', 'Tidy UI footer:']
       : ['JOURNAL_PATH_MARKER', 'INDEX_PATH_MARKER', 'SESSION_ID_MARKER', 'RUN_MARKER', 'NAME_MARKER', 'FAILURE_MARKER'];
-    f.owner.cacheDetails = () => markers;
     if (page === 'logs') f.owner.readSessionName = () => markers[4];
     f.state.logs = { capture: true, state: 'failed', path: markers[0], commonPath: markers[1], session: markers[2],
       run: markers[3], name: 'Journal-only name', failure: markers[5], records: 1, writes: 2, dropped: 0, writeErrors: 0 } as any;
@@ -402,14 +459,14 @@ for (const height of [5, 6]) for (const page of ['cache', 'logs'])
     for (let i = 0; i < (page === 'cache' ? 5 : 4); i++) await f.key('\x1b[B');
     await f.key('\r');
     const painted = [];
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 64; i++) {
       const rows = f.render(); assert.ok(rows.length <= height); assert.ok(rows.every(row => visibleWidth(row) <= 24));
       painted.push(...rows); await f.key('\x1b[6~');
     }
     for (const marker of markers) assert.ok(painted.some(row => row.includes(marker)), `detail is reachable: ${marker}`);
     assert.equal(f.calls.length, 0, 'scrolling only reads details');
-    for (let i = 0; i < (page === 'cache' ? 2 : 4); i++) await f.key('\x1b[B');
-    await f.key('\r');
+    if (page === 'cache') { await f.key('\x1b[B'); await f.key('\r'); }
+    else { for (let i = 0; i < 4; i++) await f.key('\x1b[B'); await f.key('\r'); }
     assert.ok(f.render().some(row => row.includes('Appearance: Active')), 'Back returns to support');
   });
 
@@ -432,7 +489,7 @@ test('header and navigation occupy their own separated sections on every page', 
   check('Tidy UI');
   await f.select('Code color theme'); check('Code color theme'); await f.key('\x1b');
   await f.select('Status & troubleshooting'); check('Status & troubleshooting');
-  for (const page of ['Highlighting service details', 'Diagnostic logs', 'Display cache']) {
+  for (const page of ['Highlighting service details', 'Diagnostic logs', 'Display cache', 'Layout cache activity']) {
     await f.select(page); check(page); await f.key('\x1b');
   }
 });
@@ -457,7 +514,7 @@ test('new pages describe their initially selected item before any selection move
   const f = fixture(); await f.select('Status & troubleshooting');
   assert.match(helpRows(f.render()).join(' '), /Retry styling/u);
   await f.select('Display cache');
-  assert.match(helpRows(f.render()).join(' '), /Read current cache counters/u);
+  assert.match(helpRows(f.render()).join(' '), /Clear only display layouts/u);
 });
 
 test('action outcomes replace only the help line and use the Pi success and error colors', async () => {
@@ -500,27 +557,42 @@ test('a delayed action cannot show its result after navigation away and back', a
   assert.equal(helpRows(f.render())[0], hint);
 });
 
-test('a delayed cache clear still updates the information without replacing the new selection hint', async () => {
+test('the clear result stays visible after moving onto Back', async () => {
   const f = fixture();
   await f.select('Status & troubleshooting'); await f.select('Display cache');
   let complete!: () => void;
-  f.perform = () => new Promise(resolve => { complete = () => resolve({ ok: true, cache: ['Cached layouts: 0'] }); });
+  f.perform = () => new Promise(resolve => { complete = () => resolve({ ok: true, clearedLayouts: 1 }); });
   await f.select('Clear saved layouts'); await f.key('\x1b[B');
   complete(); await turn();
-  assert.ok(f.render().some(row => row.includes('Cached layouts: 0')));
-  assert.equal(helpRows(f.render())[0], 'Return to the previous page.');
+  assert.equal(helpRows(f.render())[0], 'Cleared 1 layout.');
 });
 
-test('a cache result survives boundary paging and clears when the information actually scrolls', async () => {
-  const f = fixture(70, 16);
-  f.owner.cacheDetails = () => Array.from({ length: 30 }, (_, i) => `Cache detail ${i + 1}`);
+for (const leaveVisit of [false, true]) test(`a delayed clear ${leaveVisit ? 'does not affect the next visit' : 'reaches the peer after Escape'}`, async () => {
+  const f = fixture(98, 36); let reads = 0;
+  f.owner.cacheDetails = () => cacheMenuSample(++reads);
   await f.select('Status & troubleshooting'); await f.select('Display cache');
-  await f.select('Refresh statistics');
+  let complete!: () => void;
+  f.perform = () => new Promise(resolve => { complete = () => resolve({ ok: true, clearedLayouts: 1 }); });
+  await f.select('Clear saved layouts'); await f.key('\x1b');
+  if (leaveVisit) await f.key('\x1b');
+  complete(); await turn();
+  assert.doesNotMatch(f.render().join('\n'), /Done\./u, 'the result does not replace the new page hint');
+  if (leaveVisit) await f.select('Status & troubleshooting');
+  await f.select('Layout cache activity');
+  assert.match(f.render().join('\n'), /Layouts built\s+2\s+0\s+2/u);
+  assert.equal(helpRows(f.render())[0], leaveVisit ? 'Return to the previous page.' : 'Cleared 1 layout.');
+  assert.equal(reads, 2);
+});
+
+test('the last clear result is still visible while paging live statistics', async () => {
+  const f = fixture(70, 16);
+  await f.select('Status & troubleshooting'); await f.select('Display cache');
+  await f.select('Clear saved layouts');
   const line = () => helpRows(f.render())[0];
-  assert.equal(line(), 'Cache statistics refreshed.');
-  await f.key('\x1b[5~'); assert.equal(line(), 'Cache statistics refreshed.');
-  await f.key('\x1b[6~'); assert.equal(line(), 'Read current cache counters.');
-  assert.ok(!f.render().some(row => /Cache detail 1\s*│/u.test(row)));
+  assert.equal(line(), 'Cleared 2 layouts.');
+  await f.key('\x1b[5~'); assert.equal(line(), 'Cleared 2 layouts.');
+  await f.key('\x1b[6~'); assert.equal(line(), 'Cleared 2 layouts.');
+  assert.doesNotMatch(f.render().join('\n'), /Type\s+Layouts\s+Rows\s+Est\. size/u, 'the viewport moved past the first detail');
 });
 
 test('clicking separators, description, blank row or navigation cannot activate a setting', () => {
@@ -621,13 +693,11 @@ test('theme picker measures the full fixed catalogue, not only visible or search
   assert.equal(f.calls.length, 0, 'measuring/navigating/filtering has no preference action');
 });
 
-test('long diagnostic paths, IDs and detail scrolling do not widen a page or hide paging keys', async () => {
-  const f = fixture();
+test('cache detail scrolling does not widen the page or hide paging keys', async () => {
+  const f = fixture(70, 16);
   await f.select('Status & troubleshooting'); await f.select('Display cache');
   const width = f.menu.preferredWidth();
-  f.owner.cacheDetails = () => ['PATH_' + '/long-directory'.repeat(200)];
-  await f.select('Refresh statistics');
-  assert.equal(f.menu.preferredWidth(), width);
+  assert.equal(width, 98);
   const rows = f.menu.render(width).map(plain);
   for (const control of ['↑↓', 'Enter', 'Esc Back', 'PgUp/PgDn']) assert.ok(rows.at(-2)!.includes(control), `missing navigation key: ${control}`);
   assert.ok(helpRows(rows)[0]);
@@ -635,7 +705,7 @@ test('long diagnostic paths, IDs and detail scrolling do not widen a page or hid
 });
 
 test('narrow detail pages keep Back and paging discoverable inside the actual frame', async () => {
-  const f = fixture(24, 12); f.owner.cacheDetails = () => Array.from({ length: 30 }, (_, i) => `Cache detail ${i}`);
+  const f = fixture(24, 12);
   f.render(); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r');
   for (let i = 0; i < 5; i++) await f.key('\x1b[B');
   await f.key('\r');
@@ -705,10 +775,10 @@ test('support actions share the toggle label column and a distinct submenu indic
   const f = fixture(); await f.select('Status & troubleshooting');
   const width = f.menu.preferredWidth(), rows = f.menu.render(width).map(plain);
   const labels = ['Reapply Tidy UI appearance', 'Reapply terminal colors', 'Use Occipital highlighting', 'Highlighting service details',
-    'Diagnostic logs', 'Display cache', 'Refresh status', 'Back'];
+    'Diagnostic logs', 'Display cache', 'Layout cache activity', 'Refresh status', 'Back'];
   const nativeRow = rows.find(row => row.includes('Use Occipital highlighting'))!;
   const valueColumn = cellOf(nativeRow, 'On');
-  const submenus = new Set(['Highlighting service details', 'Diagnostic logs', 'Display cache']);
+  const submenus = new Set(['Highlighting service details', 'Diagnostic logs', 'Display cache', 'Layout cache activity']);
   for (const label of labels) {
     const row = rows.find(row => /^│[→ ] /u.test(row) && row.includes(label)); assert.ok(row);
     assert.ok(cellOf(row, label) + visibleWidth(label) + 2 <= valueColumn);
@@ -1048,7 +1118,8 @@ for (const [page, path, first, last] of [
   ['support', ['Status & troubleshooting'], 'Reapply Tidy UI appearance', 'Back'],
   ['service', ['Status & troubleshooting', 'Highlighting service details'], 'Back', 'Back'],
   ['logs', ['Status & troubleshooting', 'Diagnostic logs'], 'Record diagnostic logs', 'Back'],
-  ['cache', ['Status & troubleshooting', 'Display cache'], 'Refresh statistics', 'Back'],
+  ['cache', ['Status & troubleshooting', 'Display cache'], 'Clear saved layouts', 'Back'],
+  ['cacheActivity', ['Status & troubleshooting', 'Layout cache activity'], 'Back', 'Back'],
 ] as const) test(`keyboard bounds: ${page} stops at both list edges`, async () => {
   const f = fixture();
   try {

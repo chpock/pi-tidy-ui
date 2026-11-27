@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { sliceByColumn } from '@earendil-works/pi-tui';
 import { PiTerminal } from '../../fixtures/terminal-harness.mjs';
+import { observedClearResult } from '../../fixtures/cache-menu-observation.ts';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
 
 for (const mode of ['regular', 'fullscreen']) test(`menu keyboard bounds: real first/last, filtering and short popup (${mode})`,
@@ -40,7 +41,7 @@ for (const mode of ['regular', 'fullscreen']) test(`menu keyboard bounds: real f
       await step('\x1b[A', 3); assert.match(selected(), /^→ Reapply Tidy UI appearance/u);
       await step('\x1b[B', 20); assert.match(selected(), /^→ Back/u);
       await step('\x1b[B', 3); assert.match(selected(), /^→ Back/u);
-      await live.resize(100, 4); await step('\x1b[A', 5);
+      await live.resize(100, 4); await step('\x1b[A', 6);
       assert.match(selected(), /^→ Use Occipital highlighting/u);
       assert.ok(!live.tidyRows().some(row => /\(\d+\/\d+\)/u.test(row)), 'compact support clips the position indicator');
       await live.selectTidyItem('Reapply Tidy UI appearance', false);
@@ -150,7 +151,7 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
     };
     const checkSupportArrows = () => {
       const { left, width } = live.tidyFrame();
-      const labels = ['Highlighting service details', 'Diagnostic logs', 'Display cache'];
+      const labels = ['Highlighting service details', 'Diagnostic logs', 'Display cache', 'Layout cache activity'];
       const list = live.tidyRows(), screen = live.screen();
       for (const label of labels) {
         const y = list.findIndex(row => /^(?:→ | {2})/u.test(row) && row.slice(2).startsWith(label));
@@ -199,6 +200,7 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       const { top, bottom } = live.tidyFrame();
       await live.resize(120, bottom - top + 1 - gaps.length);
       groupGaps(false);
+      checkSupportArrows();
       checkSections('Code colors:', /^Appearance$/u);
       await live.resize(120, 40);
       groupGaps(true);
@@ -223,7 +225,7 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       assert.match(bottomLine(), /turn on appearance and terminal color matching/i);
       assert.deepEqual(live.tidyFrame(), beforeFailure, 'failure leaves the physical bounds unchanged');
       let runAndSession;
-      for (const page of ['Highlighting service details', 'Diagnostic logs', 'Display cache']) {
+      for (const page of ['Highlighting service details', 'Diagnostic logs', 'Layout cache activity', 'Display cache']) {
         await live.selectTidyItem(page); pages[page] = width();
         if (page === 'Highlighting service details') checkSections('Last issue:', /^→ Back$/u);
         if (page === 'Diagnostic logs') {
@@ -241,15 +243,33 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
           await live.resize(72, 40);
           assert.equal(journalPath(), journal, 'resizing rewraps the same path without dropping characters');
           await live.resize(120, 40);
-        }
-        if (page === 'Display cache') {
-          for (let i = 0; i < 8 && !live.tidyRows().includes('End diagnostic JSON'); i++) {
-            live.send('\x1b[6~'); await live.settle();
+          const checkBackGap = spaced => {
+            const rows = live.tidyRows(), back = rows.indexOf('  Back');
+            assert.ok(back >= 0, 'Back remains visible');
+            if (spaced) assert.equal(rows[back - 1], '', 'there is an empty row above Back');
+            assert.equal(rows[back - (spaced ? 2 : 1)], '  Refresh status');
+            return back - 1;
+          };
+          const gap = checkBackGap(true);
+          if (mode === 'fullscreen') {
+            const x = live.tidyFrame().left + 4, hint = bottomLine();
+            live.send(`\x1b[<0;${x + 1};${gap + 1}M\x1b[<0;${x + 1};${gap + 1}m`);
+            await live.settle();
+            assert.ok(live.tidyHeading(page));
+            assert.match(live.tidyRows().find(row => row.startsWith('→ ')) ?? '', /^→ Record diagnostic logs/u);
+            assert.equal(bottomLine(), hint, 'the gap does not run an action');
           }
-          checkSections('End diagnostic JSON', /^→ Refresh statistics$/u);
-          live.send('\x1b[5~'.repeat(8)); await live.settle();
-          assert.ok(live.tidyRows().some(row => row.startsWith('Saved layouts:')), 'cache details return to the top');
+          const { top, bottom } = live.tidyFrame();
+          await live.resize(120, bottom - top);
+          checkBackGap(false);
+          await live.resize(120, 40);
+          checkBackGap(true);
+          await live.selectTidyItem('Refresh status', false);
+          live.send('\x1b[B'); await live.settle();
+          assert.ok(live.tidyRows().includes('→ Back'), 'Down goes directly from Refresh status to Back');
         }
+        if (page === 'Layout cache activity') checkSections('A cache miss', /^→ Back$/u);
+        if (page === 'Display cache') checkSections('Whole Pi JS heap:', /^→ Clear saved layouts$/u);
         if (page !== 'Display cache') await backTo(support);
       }
       const diagnosticWidth = pages[support];
@@ -257,18 +277,11 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       assert.equal(diagnosticWidth, 98, 'a wide terminal leaves the preferred diagnostic width unchanged');
       assert.ok(Object.values(pages).every(columns => columns === diagnosticWidth), 'the same frame width serves every diagnostic page');
       assert.match(runAndSession ?? '', /^Run: [\da-f-]{36}; session: [\da-f-]{36}$/u, 'both diagnostic IDs fit on one physical row');
-      const cacheScope = 'Scope: Tidy UI display layouts only; excludes Pi caches, syntax sources and temporary rendering.';
+      const cacheScope = 'Tidy UI display layouts only. Not the model prompt cache.';
       assert.ok(live.tidyRows().includes(cacheScope), 'the cache scope fits on one physical row');
       await live.resize(72, 60);
       assert.equal(width(), 72, 'narrow terminal clamps the diagnostic frame');
-      const scopeIndex = () => live.tidyRows().findIndex(row => row.startsWith('Scope: '));
-      if (scopeIndex() < 0) { live.send('\x1b[6~'); await live.settle(); }
-      const scopeStart = scopeIndex();
-      assert.ok(scopeStart >= 0, 'cache paging reveals the wrapped scope');
-      assert.equal(live.tidyRows().slice(scopeStart, scopeStart + 2).map(row => row.trim()).join(' '), cacheScope,
-        'the same cache scope wraps across two physical rows');
-      assert.equal(width(), 72, 'paging does not resize the clamped frame');
-      live.send('\x1b[5~'); await live.settle();
+      assert.ok(live.tidyRows().includes(cacheScope), 'the short cache scope is still one row at 72 columns');
       await live.resize(100, 40);
       assert.equal(width(), diagnosticWidth, 'the wider frame recenters and restores its width');
       assert.ok(live.tidyRows().includes(cacheScope));
@@ -299,3 +312,76 @@ test('Diagnostic logs shows the current Pi name after /reload with recording off
     assert.ok(rows.includes(`Session name: ${title}`), 'a new journal run is not the authority for the title');
   } finally { await closeTerminals([live]); }
 });
+
+
+for (const mode of ['regular', 'fullscreen']) test(`cache opens two peer pages and keeps a separate clear result (${mode})`,
+  { timeout: 60000 }, async () => {
+    const live = new PiTerminal(`menu-display-cache-${mode}`, { tidyUi: true, mode,
+      tidyUiSettings: { nativeHighlightingEnabled: false, terminalColorsEnabled: false } });
+    const click = label => {
+      const y = live.tidyRows().findIndex(row => /^(?:→ | {2})/u.test(row) && row.slice(2).startsWith(label));
+      assert.ok(y >= 0, `${label} has a physical target`);
+      const x = live.tidyFrame().left + 5;
+      live.send(`\x1b[<0;${x};${y + 1}M\x1b[<0;${x};${y + 1}m`);
+    };
+    const support = 'Status & troubleshooting', display = 'Display cache', activity = 'Layout cache activity';
+    const open = async label => {
+      if (mode === 'fullscreen') {
+        click(label); await live.waitForScreen(() => live.tidyHeading(label), `mouse opens ${label}`);
+      } else await live.selectTidyItem(label);
+    };
+    const back = async () => {
+      if (mode === 'fullscreen') click('Back');
+      else { await live.selectTidyItem('Back', false); live.send('\r'); }
+      await live.waitForScreen(() => live.tidyHeading(support), 'Back goes directly to troubleshooting');
+    };
+    const cacheScope = 'Tidy UI display layouts only. Not the model prompt cache.';
+    const total = () => live.tidyRows().find(row => /^Total\s+\d/u.test(row));
+    try {
+      await live.ready(); await live.resize(120, 40); await live.openTidyMenu();
+      await live.selectTidyItem(support);
+      const links = live.tidyRows().filter(row => /^  (?:Display cache|Layout cache activity)\s+›$/u.test(row));
+      assert.deepEqual(links.map(row => row.trim().replace(/\s+›$/u, '')), [display, activity]);
+      await open(display);
+      const saved = total();
+      assert.ok(saved, 'the layout total is visible without another navigation step');
+      const displayRows = live.tidyRows();
+      assert.match(displayRows[displayRows.indexOf(display) + 2] ?? '', /^Type\s+Layouts\s+Rows\s+Est\. size$/u);
+      assert.ok(displayRows.indexOf(cacheScope) > displayRows.findIndex(row => row.startsWith('Queued messages')), 'model prompt scope is below the table');
+      assert.ok(live.tidyRows().some(row => row.startsWith('Whole Pi JS heap: ')));
+      assert.ok(live.tidyRows().every(row => !/Diagnostic JSON|retainedBytes|Cache hits/u.test(row)));
+      const wide = live.tidyRows().find(row => row.startsWith('Compact tool summaries')).split(/ {2,}/u);
+      await live.resize(46, 13);
+      const savedRows = await live.readCacheDetailRows(display, /cache\)\.$/u);
+      assert.ok(savedRows.includes('Compact tool summaries'));
+      assert.ok(savedRows.some(row => row.trim() === `Est. size: ${wide[3]}`), 'narrow labeled values retain the same displayed size');
+      assert.ok(live.tidyRows().includes('  Back'), 'paging does not hide Back in the short window');
+      await live.resize(120, 40); await back();
+      await open(activity);
+      const activityRows = live.tidyRows();
+      assert.match(activityRows[activityRows.indexOf(activity) + 2] ?? '', /^\s*Total\s+Tool cards\s+Other layouts$/u);
+      assert.ok(activityRows.some(row => /^Cache hits\s+\d/u.test(row)));
+      assert.ok(live.tidyRows().some(row => /Footer not counted/u.test(row)));
+      assert.ok(live.tidyRows().every(row => !row.includes('Clear saved layouts') && !row.includes('Refresh statistics')));
+      live.send('\x1b'); await live.waitForScreen(() => live.tidyHeading(support), 'Escape goes directly to troubleshooting');
+      await open(display);
+      assert.ok(live.tidyRows().every(row => !row.includes('Refresh statistics')));
+      const frame = live.tidyFrame(), receipt = () => observedClearResult(live.tidyRows());
+      if (mode === 'fullscreen') {
+        click('Clear saved layouts');
+        await live.waitForScreen(() => receipt() !== undefined, 'mouse clear reports the actual result');
+      } else await live.selectTidyItem('Clear saved layouts');
+      const cleared = receipt();
+      assert.notEqual(cleared, undefined);
+      assert.deepEqual(live.tidyFrame(), frame, 'the existing hint row carries the result');
+      await back(); await open(activity);
+      assert.equal(receipt(), cleared, 'activity shows the same clear result next to its own current counters');
+      await back(); await open(display);
+      assert.equal(receipt(), cleared, 'the clear result survives navigation through both peers');
+      await back(); live.send('\x1b'); await live.waitForScreen(() => live.tidyHeading('Tidy UI'), 'leave troubleshooting');
+      await live.selectTidyItem(support, false); live.send('\r');
+      await live.waitForScreen(() => live.tidyHeading(support), 'reenter troubleshooting with the preserved selection');
+      await open(display);
+      assert.equal(receipt(), undefined, 'a new troubleshooting visit has no prior result');
+    } finally { await closeTerminals([live]); }
+  });

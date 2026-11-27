@@ -57,7 +57,7 @@ const syntaxApplicationModules = [
   'src/application/syntax-options.ts',
 ];
 const preferenceApplicationModules = ['src/application/preferences.ts'];
-const menuDataModules = ['src/application/menu-contract.ts', 'src/application/menu-model.ts'];
+const menuDataModules = ['src/application/menu-contract.ts', 'src/application/menu-model.ts', 'src/application/cache-menu.ts'];
 const menuActionModules = ['src/application/menu-actions.ts'];
 const diagnosticSessionModules = ['src/application/diagnostic-session.ts'];
 const presentationBindingModules = ['src/application/footer-session.ts', 'src/application/terminal-color-session.ts'];
@@ -634,11 +634,16 @@ const menuDataDependencies = new Map([
     ['src/application/syntax-menu.ts', { types: ['SyntaxMenuOutcome', 'SyntaxMenuSnapshot'] }],
     ['src/runtime-health.ts', { types: ['RuntimeHealthSnapshot'] }],
     ['src/session-logging.ts', { types: ['SessionLogging'] }],
+    ['src/render-cache.ts', { types: ['LayoutMemory'] }],
+    ['src/presentation/cache-owner.ts', { types: ['PresentationCacheStats'] }],
+  ])],
+  ['src/application/cache-menu.ts', new Map([
+    ['src/render-cache.ts', { types: ['LayoutKind'] }],
+    ['src/application/menu-contract.ts', { types: ['CacheMenuPage', 'CacheMenuSnapshot', 'TidyMenuPage'] }],
   ])],
   ['src/application/menu-model.ts', new Map([
     ['src/application/menu-contract.ts', { types: ['TidyMenuAction', 'TidyMenuSnapshot', 'TidyMenuPage', 'TidyMenuRow', 'TidyMenuIntent', 'TidyMenuCommandIntent'] }],
     ['src/appearance/theme-preference.ts', { types: ['ThemePreference', 'ThemeVariant'] }],
-    ['src/render-cache.ts', { types: ['CacheStats'] }],
     ['src/debug-log.ts', { values: ['readableDiagnosticText'] }],
     ['src/display-path.ts', { values: ['displayPath'] }],
     ['src/themes/catalogue.ts', { values: ['THEME_FAMILIES', 'themeFamilyEntry'] }],
@@ -648,7 +653,7 @@ const menuDataDependencies = new Map([
 ]);
 
 const menuActionDependencies = new Map([
-  ['src/application/menu-contract.ts', { types: ['TidyMenuAction', 'TidyMenuOwner'] }],
+  ['src/application/menu-contract.ts', { types: ['CacheMenuSnapshot', 'TidyMenuAction', 'TidyMenuOwner'] }],
   ['src/application/preferences.ts', { types: ['ApplicationPreferences', 'PreferenceScope', 'SwitchApplication'] }],
   ['src/application/syntax-menu.ts', { types: ['SyntaxMenuOutcome'], values: ['RETIRED_SETTINGS_ACTION'] }],
   ['src/appearance/theme-preference.ts', { types: ['ThemePreference'] }],
@@ -1765,7 +1770,7 @@ test('preference import policy accepts its actual data ports and rejects every n
 
 test('fixed menu contracts have one application data owner without overlay forwarding', () => {
   const overlayPath = 'src/tidy-menu.ts', contractPath = 'src/application/menu-contract.ts';
-  const names = ['TidyMenuAction', 'TidyMenuSnapshot', 'TidyMenuOwner'];
+  const names = ['TidyMenuAction', 'TidyMenuSnapshot', 'CacheMenuSnapshot', 'TidyMenuOwner'];
   const overlay = parseSource(overlayPath);
   for (const name of names) assert.equal(declarationExportNames(overlay).has(name), false,
     `overlay implementation must not own the shared ${name} contract`);
@@ -1784,18 +1789,21 @@ test('fixed menu models depend only on canonical data and named pure display hel
 });
 
 test('menu data boundary accepts narrow data and helpers without granting their implementation owners', () => {
-  const contract = 'src/application/menu-contract.ts', model = 'src/application/menu-model.ts';
+  const contract = 'src/application/menu-contract.ts', model = 'src/application/menu-model.ts', cache = 'src/application/cache-menu.ts';
   for (const text of [
     "import type { ThemePreference as Choice } from '../appearance/theme-preference.ts';",
     "import type { Switches } from '../settings.ts';",
     "type Snapshot = import('./syntax-menu.ts').SyntaxMenuSnapshot;",
+    "import type { LayoutMemory } from '../render-cache.ts';",
+    "import type { PresentationCacheStats } from '../presentation/cache-owner.ts';"
   ]) assert.doesNotThrow(() => assertMenuDataImports(contract, parseSource(contract, text)), text);
   for (const text of [
     "import { readableDiagnosticText as safe } from '../debug-log.ts';",
     "import { THEME_FAMILIES, themeFamilyEntry as family } from '../themes/catalogue.ts';",
-    "import type { CacheStats as Statistics } from '../render-cache.ts';",
   ]) assert.doesNotThrow(() => assertMenuDataImports(model, parseSource(model, text)), text);
-  for (const path of [contract, model]) {
+  assert.doesNotThrow(() => assertMenuDataImports(cache, parseSource(cache,
+    "import type { CacheMenuSnapshot } from './menu-contract.ts';")));
+  for (const path of [contract, model, cache]) {
     for (const specifier of ['../tidy-menu.ts', '../index.ts', './preferences.ts', './syntax-runtime.ts',
       '../host/pi/native-bindings.ts', '../highlighting/source-execution.ts', '@earendil-works/pi-tui']) {
       for (const text of [
@@ -1813,6 +1821,9 @@ test('menu data boundary accepts narrow data and helpers without granting their 
   for (const [path, text] of [
     [contract, "import { ExtensionSettings } from '../settings.ts';"],
     [contract, "import type { ExtensionSettings } from '../settings.ts';"],
+    [contract, "import { PresentationCacheOwner } from '../presentation/cache-owner.ts';"],
+    [cache, "import { RenderCache } from '../render-cache.ts';"],
+    [cache, "import type { PresentationCacheOwner } from '../presentation/cache-owner.ts';"],
     [model, "import { readableDiagnosticText, TextJournal } from '../debug-log.ts';"],
     [model, "import * as journal from '../debug-log.ts';"],
     [model, "type Logger = typeof import('../debug-log.ts').TextJournal;"],
@@ -1827,7 +1838,7 @@ test('menu action policy depends on scoped application capabilities rather than 
 test('menu action dependency boundary accepts named policy data but rejects service and UI authority', () => {
   const path = menuActionModules[0];
   for (const text of [
-    "import type { TidyMenuAction as Action, TidyMenuOwner } from './menu-contract.ts';",
+    "import type { CacheMenuSnapshot, TidyMenuAction as Action, TidyMenuOwner } from './menu-contract.ts';",
     "import type { ApplicationPreferences, PreferenceScope, SwitchApplication } from './preferences.ts';",
     "import { RETIRED_SETTINGS_ACTION as closed, type SyntaxMenuOutcome } from './syntax-menu.ts';",
     "import { diagnose as record, type DiagnosticSink as Sink } from '../diagnostics.ts';",

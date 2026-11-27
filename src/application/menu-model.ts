@@ -4,18 +4,16 @@ import type { ThemePreference, ThemeVariant } from '../appearance/theme-preferen
 import { SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION } from '../occipital/semantic-protocol.ts';
 import { THEME_FAMILIES, themeFamilyEntry } from '../themes/catalogue.ts';
 import { resolveTheme } from '../themes/selection.ts';
-import type { CacheStats } from '../render-cache.ts';
 import type { TidyMenuAction, TidyMenuSnapshot, TidyMenuPage, TidyMenuRow, TidyMenuIntent, TidyMenuCommandIntent } from './menu-contract.ts';
 
 interface MenuView {
   themeLoading: boolean;
   themeLoadFailed: boolean;
   query?: string;
-  cache?: string[];
   sessionName?: string;
 }
 const titles: Record<TidyMenuPage, string> = { root: 'Tidy UI', themes: 'Code color theme', support: 'Status & troubleshooting',
-  service: 'Highlighting service details', logs: 'Diagnostic logs', cache: 'Display cache' };
+  service: 'Highlighting service details', logs: 'Diagnostic logs', cache: 'Display cache', cacheActivity: 'Layout cache activity' };
 const onOff = (value: boolean) => value ? 'On' : 'Off';
 export const menuPageTitle = (page: TidyMenuPage) => titles[page];
 export const menuNavigation = (page: TidyMenuPage) => page === 'root' ? '↑↓ Navigate · Enter Select · Esc Close' : '↑↓ Navigate · Enter Select · Esc Back';
@@ -60,16 +58,17 @@ export function menuRows(page: TidyMenuPage, state: TidyMenuSnapshot, view: Menu
       item('native', 'Use Occipital highlighting', 'Use native highlighting instead of the fallback.', { kind: 'toggle', key: 'nativeHighlightingEnabled' }, onOff(state.nativeHighlightingEnabled)),
       item('service', 'Highlighting service details', 'Inspect the service and current code colors.', { kind: 'navigate', page: 'service' }, undefined, true),
       item('logs', 'Diagnostic logs', 'Inspect logging or write a state snapshot.', { kind: 'navigate', page: 'logs' }, undefined, true),
-      item('cache', 'Display cache', 'Inspect or clear saved display layouts.', { kind: 'navigate', page: 'cache' }, undefined, true),
+      item('cache', titles.cache, 'Inspect or clear saved display layouts.', { kind: 'navigate', page: 'cache' }, undefined, true),
+      item('cacheActivity', titles.cacheActivity, 'See layout reuse, builds and releases.', { kind: 'navigate', page: 'cacheActivity' }, undefined, true),
       item('refresh-status', 'Refresh status', 'Read the current status without starting work.', { kind: 'refreshStatus' }), back,
     ];
     case 'logs': return [item('logging', 'Record diagnostic logs', 'Record diagnostics even when appearance is off.', { kind: 'toggle', key: 'loggingEnabled' }, onOff(state.loggingEnabled)),
       ...(state.logs?.state === 'failed' ? [item('retryLogging', 'Retry recording', 'Retry the failed log destination.', { kind: 'maintain', action: 'retryLogging' })] : []),
       item('snapshotLogs', 'Write state snapshot', 'Write the current state if recording is on.', { kind: 'maintain', action: 'snapshotLogs' }),
       item('refresh-status', 'Refresh status', 'Read current log counters and paths.', { kind: 'refreshStatus' }), back];
-    case 'cache': return [item('refresh-cache', 'Refresh statistics', 'Read current cache counters.', { kind: 'refreshCache' }),
+    case 'cache': return [
       item('clearCache', 'Clear saved layouts', 'Clear only display layouts; later frames rebuild them.', { kind: 'maintain', action: 'clearCache' }), back];
-    case 'service': return [back];
+    case 'cacheActivity': case 'service': return [back];
   }
 }
 
@@ -131,7 +130,6 @@ export function menuDetails(page: TidyMenuPage, state: TidyMenuSnapshot, view: M
       ...(log.dropped ? ['Some diagnostic records were lost because the log buffer was full.'] : []),
       ...(log.failure ? [`Last logging issue: ${safe(log.failure)}`] : [])] : ['Diagnostic logging is unavailable in this host.'])];
   }
-  if (page === 'cache') return view.cache ?? [];
   if (page === 'service') {
     const syntax = state.syntax, provider = syntax?.provider;
     return [...healthSummary(state, true), `Native highlighting: ${onOff(state.nativeHighlightingEnabled)}`, `Service: ${provider ? `${provider.availability} (${provider.reason})` : 'Not started'}`,
@@ -162,27 +160,4 @@ export function menuSnapshot(preferences: MenuPreferences, facts: MenuFacts): Ti
     selected: snapshot?.selected ?? preferences.selectedTheme, syntax: snapshot, logs: facts.logs, health: facts.health, terminalColors,
     appearance: !preferences.appearanceEnabled ? 'Off; using Pi’s interface' : !facts.appearance?.active ? facts.appearance?.reason ?? 'Not active' :
       facts.appearance.editorActive ? 'Active' : 'Cards active; input styling not applied' };
-}
-
-interface MenuCacheFacts {
-  stats: CacheStats;
-  footer?: { retainedBytes: number; entries: number; rows: number };
-  heapUsedBytes: number;
-}
-export function menuCacheDetails(cache?: MenuCacheFacts): string[] {
-  if (!cache) return ['No active display cache.'];
-  const { stats, heapUsedBytes } = cache;
-  const footer = cache.footer ?? { retainedBytes: 0, entries: 0, rows: 0 };
-  const diagnostic = { ...stats, footerLayout: footer,
-    presentationRetainedBytes: stats.retainedBytes + footer.retainedBytes, presentationEntries: stats.entries + footer.entries,
-    presentationRows: stats.rows + footer.rows, memoryScope: 'estimated pi-tidy-ui retained UTF-16 strings plus structural overhead; excludes Pi caches, Markdown/editor and temporary rendering',
-    processHeapUsedBytes: heapUsedBytes, processMemoryScope: 'whole Pi process, not pi-tidy-ui' };
-  return [`Saved layouts: ${stats.entries + footer.entries}; rows: ${stats.rows + footer.rows}`,
-    `Estimated retained memory: ${stats.retainedBytes + footer.retainedBytes} bytes`,
-    `Hits: ${stats.hits}; misses: ${stats.misses}; builds: ${stats.builds}; releases: ${stats.releases}; collected: ${stats.collected}`,
-    ...Object.entries(stats.byKind).map(([kind, memory]) => `${kind}: ${JSON.stringify(memory)}`),
-    `Footer: ${JSON.stringify(footer)}`,
-    'Scope: Tidy UI display layouts only; excludes Pi caches, syntax sources and temporary rendering.',
-    `Whole Pi process heap: ${diagnostic.processHeapUsedBytes} bytes (not Tidy UI memory)`,
-    'Diagnostic JSON:', JSON.stringify(diagnostic).replaceAll(' ', '\\u0020'), 'End diagnostic JSON'];
 }

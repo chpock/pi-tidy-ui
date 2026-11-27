@@ -9,7 +9,7 @@ import { performMenuAction, type MenuActionCapabilities, type MenuRecordingRetry
 
 function fixture() {
   const state = { current: true, appearance: true, colors: true }, effects: string[] = [], requests: string[] = [];
-  const receipt = ['Cached layouts: 0'], switchOutcome: SyntaxMenuOutcome = { ok: false, message: 'Existing switch outcome' };
+  const receipt = 0, switchOutcome: SyntaxMenuOutcome = { ok: false, message: 'Existing switch outcome' };
   let switchArgs: Parameters<ApplicationPreferences['setSwitch']> | undefined, selected: ThemePreference | undefined;
   const journal: DiagnosticSink = (_level, _area, _message, fields) => { requests.push(String(fields?.action)); };
   const diagnostic: DiagnosticSink = () => {};
@@ -86,7 +86,7 @@ test('menu clear returns the exact eager receipt from its single synchronous ope
   const f = fixture(), pending = performMenuAction({ kind: 'clearCache' }, f.capabilities);
   assert.deepEqual(f.effects, ['clear']);
   const outcome = await pending;
-  assert.equal(outcome.ok, true); assert.equal(outcome.cache === f.receipt, true);
+  assert.equal(outcome.ok, true); assert.equal(outcome.clearedLayouts, f.receipt);
 });
 
 test('menu clear reports the absence of active layouts without fabricating an empty receipt', async () => {

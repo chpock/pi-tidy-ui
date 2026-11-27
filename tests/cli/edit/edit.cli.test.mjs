@@ -495,7 +495,7 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
       const warm = await observe(live, 'warm'); check(warm.dump);
       const again = await observe(live, 'again'); check(again.dump);
       assert.equal(again.stats.builds, warm.stats.builds, 'unchanged real frames do no custom rebuilds');
-      assert.equal(again.stats.cards.entries, 1); assert.equal(again.stats.cards.retainedBytes, warm.stats.cards.retainedBytes,
+      assert.equal(again.stats.cards.entries, 1); assert.equal(again.stats.byKind.edit.retainedBytes, warm.stats.byKind.edit.retainedBytes,
         'unchanged minified body remains retained with no admission-limit exception');
       for (const width of [140, 100]) {
         await live.resize(width); check(await live.capture(`pointer-minified-width-${width}`), width <= 120);

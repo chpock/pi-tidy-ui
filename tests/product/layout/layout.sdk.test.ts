@@ -13,12 +13,13 @@ import { SourceExecution } from "../../../src/highlighting/source-execution.ts";
 import type { CardTheme } from "../../../src/card-theme.ts";
 import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';
 import { cardInputTheme } from '../../fixtures/sdk-contract-support.ts';
-import { LAYOUT_KINDS, RenderCache } from "../../../src/render-cache.ts";
+import { LAYOUT_KINDS, MEMORY_FIELDS, RenderCache } from "../../../src/render-cache.ts";
+import { observedCacheLayouts, observedCacheActivity, observedClearResult } from "../../fixtures/cache-menu-observation.ts";
 import { UserMessageComponent } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/user-message.js";
 import { initTheme, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { sliceByColumn } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
-import { menuPage, setAppearance } from "../../helpers/menu-driver.ts";
+import { withMenu, setAppearance } from "../../helpers/menu-driver.ts";
 import { Container, Root, Text, Tool, bashTool, color, editDiff, extensionHarness, installTidyUi, mouse, plain, setup, spinnerFrames } from "../../fixtures/sdk-contract-support.ts";
 
 test('unchanged tool rows with a separator let Pi reuse the previous array', () => {
@@ -284,27 +285,24 @@ test("new theme and expansion/structure changes do not leave stale cache geometr
 test("optional layout diagnostics distinguish retained estimates from whole-process heap and reject retired controls", async () => {
   const h = extensionHarness("tui", { "tidy-ui-cache-mb": "0.01" });
   const command = h.commands.get("tidy-ui")!.handler;
-  let cacheText = '';
-  const readCache = async () => { cacheText = await menuPage(command, h.ctx, ['Status & troubleshooting', 'Display cache']); };
-  const stats = () => cacheMenuStats(cacheText);
+  const readCache = (clear = false) => cacheMenuStats(command, h.ctx, clear);
   try {
     await h.events.get("session_start")!({}, h.ctx); h.root.render(80);
     assert.ok(h.notices.some(text => /tidy-ui-cache-mb is ignored/u.test(text)));
-    await readCache();
-    const first = stats(); assert.ok(first.entries > 0); assert.ok(first.processHeapUsedBytes > 0);
-    assert.equal(first.retainedBytes, first.stringBytes + first.overheadBytes);
-    assert.equal(first.presentationRetainedBytes, first.retainedBytes + first.footerLayout.retainedBytes);
-    assert.match(cacheText, /Tidy UI display layouts only/u);
-    assert.match(cacheText, /Whole Pi process heap:.*not Tidy UI memory/u);
-    assert.doesNotMatch(cacheText, /limitBytes/u);
+    const first = await readCache(); assert.ok(first.entries > 0); assert.ok(first.processHeapUsedBytes > 0);
+    assert.match(first.layouts, /Tidy UI display layouts only/u);
+    assert.match(first.layouts, /Whole Pi JS heap:.*not the display cache/u);
+    assert.doesNotMatch(first.layouts, /limitBytes/u);
     for (const invalid of ["cache limit 0", "cache limit -1", "cache cards limit 0", "cache wrong", "cache limit 1 extra"] ) {
       await command(invalid, h.ctx); assert.match(h.notices.at(-1)!, /limits have been removed|Usage:/);
     }
-    await readCache(); assert.equal(stats().retainedBytes, first.retainedBytes);
-    cacheText = await menuPage(command, h.ctx, ['Status & troubleshooting', 'Display cache', 'Clear saved layouts']); assert.equal(stats().entries, 0); assert.equal(stats().retainedBytes, 0);
+    assert.equal((await readCache()).retainedBytes, first.retainedBytes);
+    const cleared = await readCache(true); assert.equal(cleared.entries, 0); assert.equal(cleared.retainedBytes, 0);
+    assert.equal(cleared.clearedLayouts, first.presentationEntries, 'receipt counts the live retained layouts');
+    assert.equal(cleared.builds, first.builds, 'clear does not reset or advance the build count');
     h.root.render(80); await setAppearance(command, h.ctx, false); await setAppearance(command, h.ctx, true); h.root.render(80);
-    await readCache(); assert.equal(stats().entries, first.entries);
-    assert.equal(h.notices.filter(text => /tidy-ui-cache-mb is ignored/u.test(text)).length, 1, "legacy warning is runtime-local, not repeated on every frame/on");
+    assert.equal((await readCache()).entries, first.entries);
+    assert.equal(h.notices.filter(text => /tidy-ui-cache-mb is ignored/u.test(text)).length, 1, 'legacy warning is runtime-local, not repeated on every frame/on');
   } finally { await h.events.get("session_shutdown")!({}, h.ctx); }
 });
 
@@ -445,6 +443,15 @@ test("component storage retains both accounting groups until their owners are re
     const retained = controller.cacheStats();
     assert.equal(retained.cards.entries, 3);
     assert.equal(retained.ordinary.retainedBytes, baseline.ordinary.retainedBytes);
+    for (const field of [...MEMORY_FIELDS, 'hits', 'misses', 'builds', 'releases', 'collected'] as const)
+      assert.equal(retained[field], retained.ordinary[field] + retained.cards[field], `aggregate ${field}`);
+    for (const field of MEMORY_FIELDS) {
+      for (const group of [retained.ordinary, retained.cards])
+        assert.equal(group[field], LAYOUT_KINDS.reduce((sum, kind) => sum + group.byKind[kind][field], 0), `group ${field}`);
+      for (const kind of LAYOUT_KINDS)
+        assert.equal(retained.byKind[kind][field], retained.ordinary.byKind[kind][field] + retained.cards.byKind[kind][field]);
+    }
+    assert.equal(retained.retainedBytes, retained.stringBytes + retained.overheadBytes);
     for (const [i, node] of summaries.entries()) assert.strictEqual(node.render(80), rows[i]);
     assert.equal(controller.cacheStats().ordinary.builds, baseline.ordinary.builds);
     root.removeChild(summaries[0]!);
@@ -472,21 +479,20 @@ test("layout diagnostics preserve group attribution and ignore retired launch bu
   const h = extensionHarness("tui", { "tidy-ui-cache-mb": "0.1", "tidy-ui-card-cache-mb": "128" });
   h.root.addChild(bashTool("card"));
   const command = h.commands.get("tidy-ui")!.handler;
-  let cacheText = '';
-  const readCache = async () => { cacheText = await menuPage(command, h.ctx, ['Status & troubleshooting', 'Display cache']); };
-  const stats = () => cacheMenuStats(cacheText);
+  const readCache = (clear = false) => cacheMenuStats(command, h.ctx, clear);
   try {
-    await h.events.get("session_start")!({}, h.ctx); h.root.render(80); await readCache();
-    assert.equal(stats().ordinary.entries, 1); assert.equal(stats().cards.entries, 1);
-    assert.equal(stats().byKind.summary.entries, 1); assert.equal(stats().byKind.bash.entries, 1);
+    await h.events.get("session_start")!({}, h.ctx); h.root.render(80);
+    const stats = await readCache();
+    assert.equal(stats.ordinary.entries, 1); assert.equal(stats.cards.entries, 1);
+    assert.equal(stats.byKind.summary.entries, 1); assert.equal(stats.byKind.bash.entries, 1);
     for (const retired of ["cache cards limit 129", "cache cards limit -1", "cache cards limit NaN", "cache cards limit 0"] ) {
       await command(retired, h.ctx); assert.match(h.notices.at(-1)!, /Usage:/);
     }
-    await readCache(); assert.equal(stats().entries, 2);
-    await setAppearance(command, h.ctx, false); await setAppearance(command, h.ctx, true); h.root.render(80); await readCache();
-    assert.equal(stats().entries, 2);
+    assert.equal((await readCache()).entries, 2);
+    await setAppearance(command, h.ctx, false); await setAppearance(command, h.ctx, true); h.root.render(80);
+    assert.equal((await readCache()).entries, 2);
     assert.equal(h.notices.filter(text => /tidy-ui-card-cache-mb is ignored/u.test(text)).length, 1);
-    cacheText = await menuPage(command, h.ctx, ['Status & troubleshooting', 'Display cache', 'Clear saved layouts']); assert.equal(stats().entries, 0);
+    assert.equal((await readCache(true)).entries, 0);
   } finally { await h.events.get("session_shutdown")!({}, h.ctx); }
 });
 
@@ -621,19 +627,20 @@ test("Output padding effective settings remain authoritative when native user pa
   } finally { controller.restore(); }
 });
 
-function cacheMenuStats(text: string) {
-  const byKind = Object.fromEntries(LAYOUT_KINDS.map(kind => {
-    const json = text.split('\n').find(row => row.startsWith(`${kind}: `))?.slice(kind.length + 2);
-    assert.ok(json, `missing ${kind} visible cache detail`); return [kind, JSON.parse(json)];
-  }));
-  const footer = JSON.parse(text.split('\n').find(row => row.startsWith('Footer: '))!.slice(8));
-  const presentationEntries = Number(/Saved layouts: (\d+)/u.exec(text)![1]);
-  const presentationRetainedBytes = Number(/Estimated retained memory: (\d+)/u.exec(text)![1]);
-  return { byKind, entries: presentationEntries - footer.entries, retainedBytes: presentationRetainedBytes - footer.retainedBytes,
-    stringBytes: Object.values(byKind).reduce((sum, value) => sum + value.stringBytes, 0),
-    overheadBytes: Object.values(byKind).reduce((sum, value) => sum + value.overheadBytes, 0),
-    presentationRetainedBytes, footerLayout: footer, processHeapUsedBytes: Number(/Whole Pi process heap: (\d+)/u.exec(text)![1]),
-    ordinary: { entries: byKind.summary.entries }, cards: { entries: byKind.bash.entries + byKind.edit.entries + byKind.write.entries } };
+async function cacheMenuStats(command: Parameters<typeof withMenu>[0], ctx: Parameters<typeof withMenu>[1], clear: boolean) {
+  let layouts = '', clearedLayouts: number | undefined;
+  const activity = await withMenu(command, ctx, async menu => {
+    await menu.select('Status & troubleshooting'); await menu.select('Display cache');
+    if (clear) {
+      await menu.select('Clear saved layouts');
+      clearedLayouts = observedClearResult(menu.text().split('\n'));
+      assert.ok(clearedLayouts !== undefined);
+      await menu.key('\x1b'); await menu.select('Display cache');
+    }
+    layouts = menu.text();
+    await menu.key('\x1b'); await menu.select('Layout cache activity');
+  });
+  return { ...observedCacheLayouts(layouts.split('\n')), ...observedCacheActivity(activity.split('\n')), layouts, clearedLayouts };
 }
 
 test("review F5: file service rows fit narrow widths with output padding", () => {

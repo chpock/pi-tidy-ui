@@ -3,8 +3,10 @@ import { Input, SelectList, getKeybindings, matchesKey, truncateToWidth, visible
   type Component, type TuiMouseEvent, type TuiMouseEventResult } from '@earendil-works/pi-tui';
 import { readableDiagnosticText } from './debug-log.ts';
 import { wrapText } from './text-wrap.ts';
+import { cacheClearResult, cacheMenuDetails, isCacheMenuPage } from './application/cache-menu.ts';
 import { copyThemePreference, type ThemePreference, type ThemeVariant } from './appearance/theme-preference.ts';
-import type { TidyMenuAction, TidyMenuSnapshot, TidyMenuOwner, TidyMenuPage as Page, TidyMenuRow as Item, TidyMenuIntent } from './application/menu-contract.ts';
+import { isDeepStrictEqual } from 'node:util';
+import type { CacheMenuPage, CacheMenuSnapshot, TidyMenuAction, TidyMenuSnapshot, TidyMenuOwner, TidyMenuPage as Page, TidyMenuRow as Item, TidyMenuIntent } from './application/menu-contract.ts';
 import { menuRows, menuDetails, menuAction, menuThemeChoice, menuPageTitle, menuNavigation } from './application/menu-model.ts';
 const columnGap = 2;
 const submenuPadding = '  ';
@@ -46,7 +48,9 @@ export class TidyMenu implements Component {
   private originalTheme?: ThemePreference;
   private themeVariant?: ThemeVariant;
   private themePreviewed = false;
-  private cache: string[] = [];
+  private cacheVisit?: { clearedLayouts?: number };
+  private cacheSnapshot?: CacheMenuSnapshot;
+  private cacheTimer?: ReturnType<typeof setInterval>;
   private sessionName?: string;
   private detailOffset = 0;
   private listHeight = 0;
@@ -69,7 +73,7 @@ export class TidyMenu implements Component {
     this.dispose(); this.done();
   }
   dispose(): void {
-    this.closed = true; this.mousePressOrigin = undefined; this.restoreTheme();
+    this.closed = true; this.mousePressOrigin = undefined; this.stopCacheSampling(); this.cacheVisit = undefined; this.restoreTheme();
     if (this.list) { this.list.onSelect = undefined; this.list.onCancel = undefined; this.list.onSelectionChange = undefined; }
     this.list = undefined;
   }
@@ -91,12 +95,14 @@ export class TidyMenu implements Component {
   private back(): void {
     if (this.page === 'root') { this.close(); return; }
     if (this.page === 'themes') this.restoreTheme();
+    if (isCacheMenuPage(this.page)) this.stopCacheSampling();
+    if (this.page === 'support') this.cacheVisit = undefined;
     this.page = this.page === 'themes' || this.page === 'support' ? 'root' : 'support';
     this.listKey = ''; this.detailOffset = 0; this.moved(); this.requestRender();
   }
   private open(page: Page): void {
     this.page = page; this.listKey = ''; this.detailOffset = 0; this.moved();
-    if (page === 'cache') this.cache = this.owner.cacheDetails();
+    if (isCacheMenuPage(page)) this.startCacheSampling(page);
     if (page === 'logs') this.sessionName = this.owner.readSessionName();
     if (page === 'themes') {
       const visit = ++this.themeVisit; this.themePreviewed = false; this.themeVariant = undefined;
@@ -114,6 +120,18 @@ export class TidyMenu implements Component {
       });
     }
     this.requestRender();
+  }
+  private startCacheSampling(page: CacheMenuPage): void {
+    this.cacheVisit ??= {};
+    this.cacheSnapshot = this.owner.cacheDetails(page);
+    this.cacheTimer = setInterval(() => {
+      const snapshot = this.owner.cacheDetails(page);
+      if (!isDeepStrictEqual(snapshot, this.cacheSnapshot)) { this.cacheSnapshot = snapshot; this.requestRender(); }
+    }, 1000);
+    this.cacheTimer.unref?.();
+  }
+  private stopCacheSampling(): void {
+    clearInterval(this.cacheTimer); this.cacheTimer = undefined; this.cacheSnapshot = undefined;
   }
   private resetThemePreview(): void {
     const original = this.originalTheme;
@@ -150,16 +168,18 @@ export class TidyMenu implements Component {
   private async perform(action: TidyMenuAction): Promise<void> {
     if (this.closed || this.busy) return;
     const revision = this.navigationRevision;
+    const cacheVisit = action.kind === 'clearCache' ? this.cacheVisit : undefined;
     this.busy = true; this.requestRender();
     let outcome: Awaited<ReturnType<TidyMenuOwner['act']>>;
     try { outcome = await this.owner.act(action); }
     catch { outcome = { ok: false, message: 'This action could not be completed.' }; }
     this.busy = false;
     if (this.closed) return;
-    if (action.kind === 'clearCache' && outcome.cache) this.cache = outcome.cache;
+    const cleared = outcome.ok ? outcome.clearedLayouts : undefined;
+    if (cacheVisit && cacheVisit === this.cacheVisit && cleared !== undefined) cacheVisit.clearedLayouts = cleared;
     const current = this.navigationRevision === revision;
     if (action.kind === 'theme' && this.page === 'themes') { this.page = 'root'; this.detailOffset = 0; this.moved(); }
-    if (current) this.feedback(outcome.ok ? 'Done.' : outcome.message, outcome.ok ? 'success' : 'error');
+    if (current && cleared === undefined) this.feedback(outcome.ok ? 'Done.' : outcome.message, outcome.ok ? 'success' : 'error');
     this.requestRender();
   }
   private activate(value: string): void {
@@ -174,7 +194,6 @@ export class TidyMenu implements Component {
       case 'refreshStatus':
         if (this.page === 'logs') this.sessionName = this.owner.readSessionName();
         this.feedback('Status refreshed.'); this.requestRender(); return;
-      case 'refreshCache': this.cache = this.owner.cacheDetails(); this.feedback('Cache statistics refreshed.'); this.requestRender(); return;
       case 'toggle':
       case 'toggleVariant':
       case 'choosePi':
@@ -190,7 +209,7 @@ export class TidyMenu implements Component {
   }
   preferredWidth(): number {
     if (this.closed) return 1;
-    if (this.page === 'support' || this.page === 'service' || this.page === 'logs' || this.page === 'cache') return diagnosticWidth;
+    if (this.page === 'support' || this.page === 'service' || this.page === 'logs' || isCacheMenuPage(this.page)) return diagnosticWidth;
     const items = this.pageItems(this.owner.snapshot(), false);
     const columns = itemColumns(items);
     const content = 2 + columns.label + (columns.value ? columnGap + columns.value : 0) + columns.arrow;
@@ -204,7 +223,7 @@ export class TidyMenu implements Component {
   }
   private summary(state: TidyMenuSnapshot): string[] {
     return menuDetails(this.page, state, { themeLoading: this.themeLoading, themeLoadFailed: this.themeLoadFailed,
-      cache: this.cache, sessionName: this.sessionName });
+      sessionName: this.sessionName });
   }
 
   focused = false;
@@ -217,8 +236,9 @@ export class TidyMenu implements Component {
     this.items = this.pageItems(state);
     const root = this.page === 'root', themes = this.page === 'themes', logs = this.page === 'logs';
     if (root && state.selected.kind === 'pi' && this.selected.root === 'theme-variant') this.select('themes');
-    const details = this.summary(state);
-    const hasDetails = Number(details.length > 0);
+    const cachePage = isCacheMenuPage(this.page) ? this.page : undefined;
+    const details = cachePage ? undefined : this.summary(state);
+    const hasDetails = Number(!!cachePage || !!details?.length);
     const searchRows = this.page === 'themes' && !this.themeLoading && !this.themeLoadFailed && height >= 6 ? 1 : 0;
     const helpHeight = !themes && height >= 4 ? 2 : 0;
     // In tiny terminals keep the selectable row and details before adding chrome.
@@ -229,9 +249,10 @@ export class TidyMenu implements Component {
     const rule = this.theme.fg('border', '─'.repeat(innerWidth));
     const heading = sections ? [this.theme.fg('accent', this.theme.bold(menuPageTitle(this.page))), rule] : [];
     const fixed = heading.length + searchRows + (sections ? 2 : 0) + helpHeight;
-    const wrappedDetails = logs
-      ? details.map(line => visibleWidth(line) <= innerWidth ? [line] : wrapText(line, innerWidth, { wide: 'replace' }))
-      : details.map(line => wrapTextWithAnsi(line, innerWidth));
+    const detailRows = cachePage ? cacheMenuDetails(cachePage, this.cacheSnapshot, innerWidth) : details!;
+    const wrappedDetails = logs || cachePage
+      ? detailRows.map(line => visibleWidth(line) <= innerWidth ? [line] : wrapText(line, innerWidth, { wide: 'replace' }))
+      : detailRows.map(line => wrapTextWithAnsi(line, innerWidth));
     let minimumDetails = hasDetails;
     if (searchRows) {
       const selection = wrappedDetails[0]!;
@@ -240,8 +261,10 @@ export class TidyMenu implements Component {
     }
     const summaries = wrappedDetails.flat();
     const available = room - fixed;
+    const support = this.page === 'support';
+    const reservedListRows = support ? this.items.length + 1 : Math.min(this.items.length + 1, 4);
     const summaryRoom = Math.min(summaries.length, Math.max(0, Math.min(available - 1, minimumDetails),
-      available - Math.min(this.items.length + 1, this.page === 'support' ? 9 : 4) - (this.page === 'support' ? supportGroupCount : 0)));
+      available - reservedListRows - (support ? supportGroupCount : 0)));
     this.detailHeight = summaryRoom;
     this.frameInset = framed ? 1 : 0;
     this.detailLines = summaries;
@@ -249,12 +272,13 @@ export class TidyMenu implements Component {
     const summary = summaries.slice(this.detailOffset, this.detailOffset + summaryRoom).map(line => this.theme.fg('muted', line));
     const afterSummary = available - summary.length;
     const detailGap = !root && !themes && summary.length > 0 && afterSummary > Math.min(2, this.items.length) ? 1 : 0;
-    const groupRoom = this.page === 'support' && afterSummary - detailGap >= 8 ? supportGroupCount : 0;
+    const groupRoom = support && afterSummary - detailGap >= this.items.length + supportGroupCount ? supportGroupCount : 0;
     const rootGap = root && sections && available > 2 ? 1 : 0;
     const unspacedListRoom = afterSummary - detailGap - groupRoom - rootGap;
-    // Each titled group has one following gap. Keep all choices and headings ahead of these gaps.
-    const groupGapRoom = groupRoom && unspacedListRoom - this.items.length >= groupRoom ? groupRoom : 0;
-    const listSpace = Math.max(1, unspacedListRoom - groupGapRoom);
+    // Keep details, headings and all choices ahead of gaps between groups or above Back.
+    const gapCount = logs || cachePage === 'cache' ? 1 : groupRoom;
+    const gapRoom = unspacedListRoom - this.items.length >= gapCount ? gapCount : 0;
+    const listSpace = Math.max(1, unspacedListRoom - gapRoom);
     const searchGap = searchRows && listSpace > 3 ? 1 : 0;
     const themeBoundaries: number[] = [];
     const dividerPadding = '  ';
@@ -270,8 +294,8 @@ export class TidyMenu implements Component {
     let separatorsLeft = wholeThemeListFits ? themeBoundaries.length : Math.min(1, themeBoundaries.length, Math.max(0, choiceSpace - 3));
     const backGap = searchRows && (wholeThemeListFits ? themeListHeight < choiceSpace : choiceSpace - separatorsLeft > 3) ? 1 : 0;
     const listRoom = choiceSpace - separatorsLeft - backGap;
-    const wholeSupportListFits = this.page === 'support' && this.items.length <= listRoom;
-    const maxVisible = Math.max(1, listRoom - (wholeThemeListFits || wholeSupportListFits ? 0 : 1));
+    const wholeDiagnosticListFits = (this.page === 'support' || logs || cachePage) && this.items.length <= listRoom;
+    const maxVisible = Math.max(1, listRoom - (wholeThemeListFits || wholeDiagnosticListFits ? 0 : 1));
     const columns = itemColumns(this.pageItems(state, false), innerWidth);
     const formatted = this.items.map(item => {
       let label = truncateToWidth(item.label, columns.label, '…');
@@ -316,19 +340,21 @@ export class TidyMenu implements Component {
         const group = value === 'back' ? '' : value === 'reapplyAppearance' || value === 'reapplyColors' ? 'Appearance'
           : value === 'native' || value === 'service' ? 'Code highlighting' : 'Diagnostics';
         if (group !== previousGroup) {
-          if (groupGapRoom && previousGroup) body.push('');
+          if (gapRoom && previousGroup) body.push('');
           if (group) body.push(this.theme.fg('dim', group));
           previousGroup = group;
         }
       }
+      if (gapRoom && (logs || cachePage === 'cache') && value === 'back') body.push('');
       this.mouseRows.set(body.length, { row: index, value: index < maxVisible ? value : undefined });
       body.push(row);
       if (backGap && index < maxVisible && this.items[firstVisible + index]?.intent.kind === 'back') body.push('');
     });
     if (helpHeight) {
       const help = this.items.find(item => item.value === this.list!.getSelectedItem()?.value)?.help ?? '';
-      const line = this.outcome ? safe(this.outcome.text) : help;
-      body.push('', this.theme.fg(this.outcome?.color ?? 'muted', truncateToWidth(line, innerWidth, '…')));
+      const cleared = cachePage ? this.cacheVisit?.clearedLayouts : undefined;
+      const line = this.outcome ? safe(this.outcome.text) : cleared === undefined ? help : cacheClearResult(cleared);
+      body.push('', this.theme.fg(this.outcome?.color ?? (cleared === undefined ? 'muted' : 'success'), truncateToWidth(line, innerWidth, '…')));
     }
     if (sections) {
       const paged = summaries.length > summaryRoom;

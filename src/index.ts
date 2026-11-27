@@ -5,6 +5,7 @@ import { classifyNativeCode, nativeServiceRows, observeFooterSlot } from './host
 import type { UserRows } from './host/pi/user-components.ts';
 import { PresentationSpinner } from './presentation/spinner.ts';
 import { createRequire } from "node:module";
+import { getHeapStatistics } from "node:v8";
 import { SessionDiagnostics } from './application/diagnostic-session.ts';
 import { notify } from './notifications.ts';
 import { ExtensionSettings, processPreferences, type LocalPreferences } from './settings.ts';
@@ -14,7 +15,7 @@ import { FooterSession } from './application/footer-session.ts';
 import { TerminalColorSession } from './application/terminal-color-session.ts';
 import { TidyMenu } from './tidy-menu.ts';
 import type { TidyMenuOwner } from './application/menu-contract.ts';
-import { menuSnapshot, menuCacheDetails } from './application/menu-model.ts';
+import { menuSnapshot } from './application/menu-model.ts';
 import { performMenuAction } from './application/menu-actions.ts';
 import { type JournalOptions } from "./debug-log.ts";
 import { diagnose, reportRuntime, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
@@ -98,9 +99,9 @@ export interface TidyUiController {
   restore(options?: { repaint?: boolean }): void;
   renderEditorStatus(width: number, info: EditorStatusInfo): string[];
   cacheStats(): TidyUiCacheStats;
-  /** Explicit diagnostic command only; does not render or advance a clock. */
+  /** Explicit journal capture; reconciles collected layouts without rendering. */
   logSnapshot(): void;
-  clearCache(): void;
+  clearCache(): number;
   /** Forward composed-client notices without traversing transcript history. */
   syntaxSourceChanged(keys: readonly string[], groups?: readonly number[]): void;
   syntaxMetadataChanged(): void;
@@ -200,8 +201,11 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
   }
   const userPresenter = new UserPresenter<object, UserRows>(cache, options.diagnostic, options.presentationConstructionObserver);
   const queuedPresenter = new QueuedPresenter<object>(cache, options.diagnostic, options.presentationConstructionObserver);
-  const clearCache = () => { fileDetails.clear(); cacheOwner.clear(); toolSessions.clearLayouts(); userPresenter.clear(); queuedPresenter.clear();
-    diagnose(options.diagnostic, 'INFO', 'cache', 'Presentation layouts cleared; native/source caches are unchanged'); };
+  const clearCache = () => {
+    fileDetails.clear(); const cleared = cacheOwner.clear(); toolSessions.clearLayouts(); userPresenter.clear(); queuedPresenter.clear();
+    diagnose(options.diagnostic, 'INFO', 'cache', 'Presentation layouts cleared; native/source caches are unchanged');
+    return cleared;
+  };
   const cards = new Set([...DEFAULT_CARDS, ...options.cards ?? []]);
   const overrides = new Set(options.compact ?? []);
   const nativeOverrides = new Set(options.cards ?? []);
@@ -329,6 +333,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
     get editorActive() { return native.editorActive; }, get editorStatusActive() { return native.editorStatusActive; },
     cacheStats: () => cacheOwner.stats(),
     logSnapshot() {
+      cacheOwner.reconcileCollected();
       diagnose(options.diagnostic, 'INFO', 'tool', 'Native lifecycle callback counters; these are not source dispatches',
         { callbacks: lifecycleCallbacks, phaseChanges: lifecyclePhaseChanges });
       diagnose(options.diagnostic, 'INFO', 'animation', 'Snapshot of owned fallback animation; native Pi clock is not intercepted', spinner.snapshot());
@@ -651,8 +656,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         },
         clearLayouts() {
           if (!controller?.active) return undefined;
-          controller.clearCache(); footer.clearLayouts();
-          return owner.cacheDetails();
+          return controller.clearCache() + footer.clearLayouts();
         },
         recording: {
           async retry() {
@@ -669,9 +673,10 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           },
         },
       }),
-      cacheDetails() {
-        if (!controller) return menuCacheDetails();
-        return menuCacheDetails({ stats: controller.cacheStats(), footer: footer.retainedMemory(), heapUsedBytes: process.memoryUsage().heapUsed });
+      cacheDetails(page) {
+        if (!current() || !controller) return undefined;
+        return { active: controller.active, stats: controller.cacheStats(),
+          ...(page === 'cache' ? { footer: footer.retainedMemory(), heapUsedBytes: getHeapStatistics().used_heap_size } : {}) };
       },
     };
     return owner;

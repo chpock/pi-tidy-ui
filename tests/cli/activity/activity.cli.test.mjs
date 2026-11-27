@@ -67,10 +67,11 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
       assert.equal(argumentsOnly.spinnerStats.starts, 0); assert.equal(argumentsOnly.spinnerStats.ticks, 0);
       assert.equal(lines(argumentsOnly.tools[0])[0], ' → read a.txt');
        writeFileSync(join(live.output, 'provider-go'), 'go'); await live.event('tool_gate');
-       // Cache notifications precede repaint; warm the cold owners before sampling.
+       const beforeClear = await live.cacheSnapshot();
        const clearStats = await live.cacheSnapshot(true);
        const prepared = await busyCapture(live, 'working-prepare'); await assertBusy(prepared);
-       assert.equal(clearStats.entries, 0, 'the clear packet precedes cold layout materialization');
+       assert.ok(beforeClear.presentationEntries > 0);
+       assert.equal(clearStats.clearedLayouts, beforeClear.presentationEntries, 'the receipt counts all live layouts removed while Working');
        const warmStats = await live.cacheSnapshot();
        const warm = await busyCapture(live, 'working-warm'); await assertBusy(warm);
        assert.equal(warmStats.byKind.summary.entries, warm.tools.length, 'all tool summaries are warm before the baseline packet');
