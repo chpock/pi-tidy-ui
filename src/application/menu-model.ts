@@ -12,6 +12,7 @@ interface MenuView {
   themeLoadFailed: boolean;
   query?: string;
   cache?: string[];
+  sessionName?: string;
 }
 const titles: Record<TidyMenuPage, string> = { root: 'Tidy UI', themes: 'Code color theme', support: 'Status & troubleshooting',
   service: 'Highlighting service details', logs: 'Diagnostic logs', cache: 'Display cache' };
@@ -124,7 +125,7 @@ export function menuDetails(page: TidyMenuPage, state: TidyMenuSnapshot, view: M
     return [...healthSummary(state), ...(log ? [`Recording: ${log.capture ? log.state === 'failed' ? 'Failed; retry available' : 'On' : 'Off'}`,
       ...(log.state === 'off' ? ['No log file created.'] : [`Journal: ${safe(displayPath(log.path))}`, `Session index: ${safe(displayPath(log.commonPath))}`]),
       `Run: ${safe(log.run)}; session: ${safe(log.session)}`,
-      `Session name: ${safe(log.name ?? 'unknown')}`,
+      `Session name: ${safe(view.sessionName ?? 'unknown')}`,
       `Records: ${log.records}; writes: ${log.writes}`,
       `Dropped records: ${log.dropped}; log write errors: ${log.writeErrors}`,
       ...(log.dropped ? ['Some diagnostic records were lost because the log buffer was full.'] : []),

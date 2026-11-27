@@ -24,6 +24,8 @@ export interface TidyMenuOwner {
   previewTheme(choice: ThemePreference): void;
   act(action: TidyMenuAction): Promise<SyntaxMenuOutcome & { cache?: string[] }>;
   cacheDetails(): string[];
+  /** Read current Pi metadata on explicit Diagnostic logs navigation or refresh, never during render. */
+  readSessionName(): string | undefined;
 }
 export type TidyMenuPage = 'root' | 'themes' | 'support' | 'service' | 'logs' | 'cache';
 export type TidyMenuCommandIntent = { kind: 'toggle'; key: keyof Switches }

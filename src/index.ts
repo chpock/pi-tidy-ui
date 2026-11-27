@@ -622,6 +622,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         return menuSnapshot(preferences, { color: colors.status()?.state, syntax: syntax?.snapshot(),
           logs: diagnostics.journal?.status(), health: diagnostics.healthSnapshot(), appearance: controller });
       },
+      readSessionName: () => current() ? ctx.sessionManager.getSessionName() : undefined,
       async prepareThemes() { if (current()) await ensureSyntax(ctx).prepareThemes(); },
       previewTheme(choice) { if (current()) syntax?.previewTheme(choice); },
       act: action => performMenuAction(action, {

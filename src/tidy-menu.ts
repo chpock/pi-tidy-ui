@@ -46,6 +46,7 @@ export class TidyMenu implements Component {
   private themeVariant?: ThemeVariant;
   private themePreviewed = false;
   private cache: string[] = [];
+  private sessionName?: string;
   private detailOffset = 0;
   private listHeight = 0;
   private bodyWidth = 0;
@@ -95,6 +96,7 @@ export class TidyMenu implements Component {
   private open(page: Page): void {
     this.page = page; this.listKey = ''; this.detailOffset = 0; this.moved();
     if (page === 'cache') this.cache = this.owner.cacheDetails();
+    if (page === 'logs') this.sessionName = this.owner.readSessionName();
     if (page === 'themes') {
       const visit = ++this.themeVisit; this.themePreviewed = false; this.themeVariant = undefined;
       this.themeLoading = true; this.themeLoadFailed = false; this.search.setValue('');
@@ -168,7 +170,9 @@ export class TidyMenu implements Component {
       case 'back': this.back(); return;
       case 'close': this.close(); return;
       case 'navigate': this.open(intent.page); return;
-      case 'refreshStatus': this.feedback('Status refreshed.'); this.requestRender(); return;
+      case 'refreshStatus':
+        if (this.page === 'logs') this.sessionName = this.owner.readSessionName();
+        this.feedback('Status refreshed.'); this.requestRender(); return;
       case 'refreshCache': this.cache = this.owner.cacheDetails(); this.feedback('Cache statistics refreshed.'); this.requestRender(); return;
       case 'toggle':
       case 'toggleVariant':
@@ -198,7 +202,8 @@ export class TidyMenu implements Component {
       themeLoading: this.themeLoading, themeLoadFailed: this.themeLoadFailed });
   }
   private summary(state: TidyMenuSnapshot): string[] {
-    return menuDetails(this.page, state, { themeLoading: this.themeLoading, themeLoadFailed: this.themeLoadFailed, cache: this.cache });
+    return menuDetails(this.page, state, { themeLoading: this.themeLoading, themeLoadFailed: this.themeLoadFailed,
+      cache: this.cache, sessionName: this.sessionName });
   }
 
   focused = false;

@@ -30,7 +30,7 @@ function fixture(width = 70, height = 24, paint = colors) {
     if (action.kind === 'clearCache') return { ok: true, cache: owner.cacheDetails() };
     return { ok: true };
   };
-  const owner: TidyMenuOwner = { snapshot: () => state, prepareThemes: async () => { prepared++; },
+  const owner: TidyMenuOwner = { snapshot: () => state, readSessionName: () => undefined, prepareThemes: async () => { prepared++; },
     previewTheme(choice) { const copy = structuredClone(choice); previews.push(copy); state.selected = copy; },
     act: action => perform(action), cacheDetails: () => { cacheReads++; return ['Cached layouts: 2', 'Estimated memory: 1 KiB']; } };
   const menu = new TidyMenu(owner, paint as any, () => { renderRequests++; }, () => { closed++; }, () => height);
@@ -395,8 +395,9 @@ for (const height of [5, 6]) for (const page of ['cache', 'logs'])
     const f = fixture(24, height), markers = page === 'cache' ? Array.from({ length: 10 }, (_, i) => `CACHE_DETAIL_${i}`)
       : ['JOURNAL_PATH_MARKER', 'INDEX_PATH_MARKER', 'SESSION_ID_MARKER', 'RUN_MARKER', 'NAME_MARKER', 'FAILURE_MARKER'];
     f.owner.cacheDetails = () => markers;
+    if (page === 'logs') f.owner.readSessionName = () => markers[4];
     f.state.logs = { capture: true, state: 'failed', path: markers[0], commonPath: markers[1], session: markers[2],
-      run: markers[3], name: markers[4], failure: markers[5], records: 1, writes: 2, dropped: 0, writeErrors: 0 } as any;
+      run: markers[3], name: 'Journal-only name', failure: markers[5], records: 1, writes: 2, dropped: 0, writeErrors: 0 } as any;
     f.render(); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r');
     for (let i = 0; i < (page === 'cache' ? 5 : 4); i++) await f.key('\x1b[B');
     await f.key('\r');

@@ -27,6 +27,8 @@ been reconstructed.
 
 ### Fixed
 
+- Show Pi's current session name in Diagnostic logs, including after reload or
+  resume and when recording is off.
 - Leave two spaces between submenu arrows and the right edge of `/tidy-ui` menus.
 - Restore the confirmed code theme when moving the selection to Back, without
   leaving the picker or saving changes.

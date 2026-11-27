@@ -33,7 +33,7 @@ The helper retains no UI owner, schedules nothing and adds no suppression or exc
 
 ## Reading and controls
 
-Bare `/tidy-ui` → **Status & troubleshooting → Diagnostic logs** shows current session/run, paths, capture state and counters. **Record diagnostic logs** stops or resumes capture; **Retry recording** explicitly retries a failed writer. **Write state snapshot** records existing runtime/cache/syntax/color/Git/animation counters, without enabling capture or rendering.
+Bare `/tidy-ui` → **Status & troubleshooting → Diagnostic logs** shows current session/run, paths, capture state and counters. The displayed session name comes from Pi when the page opens or **Refresh status** is selected, even with recording off or after reloading a named session. This read does not seed the journal or change its records. **Record diagnostic logs** stops or resumes capture; **Retry recording** explicitly retries a failed writer. **Write state snapshot** records existing runtime/cache/syntax/color/Git/animation counters, without enabling capture or rendering.
 
 The stateless application menu-action policy interprets small recording-operation results and owns inline eligibility/failure messages, not a `SessionLogging` instance. Composition keeps the sequencing: retry enables the available current writer, then rereads the current binding; snapshot captures an active writer, records existing aggregates, awaits its flush and checks session/identity before reading its final state. These are distinct checks, not a shared retry/snapshot lifetime. Operational exceptions still reach the popup's bounded generic failure boundary; no raw error is exposed.
 

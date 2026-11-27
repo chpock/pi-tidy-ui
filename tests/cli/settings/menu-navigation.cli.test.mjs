@@ -266,3 +266,24 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       await live.closeTidyMenu();
     } finally { await closeTerminals([live]); }
   });
+
+test('Diagnostic logs shows the current Pi name after /reload with recording off', { timeout: 60000 }, async () => {
+  const live = new PiTerminal('menu-session-name', { tidyUi: true,
+    tidyUiSettings: { nativeHighlightingEnabled: false, terminalColorsEnabled: false } });
+  const title = 'Diagnostic session title';
+  const status = () => live.tidyPage(['Status & troubleshooting', 'Diagnostic logs']);
+  try {
+    await live.ready(); await live.resize(120, 40);
+    assert.ok((await status()).includes('Session name: unknown'));
+    await live.command(`/name ${title}`);
+    assert.ok((await status()).includes(`Session name: ${title}`), 'a built-in rename appears in the menu');
+    await live.diagnosticLogging(false);
+    const starts = live.events().filter(event => event.type === 'start').length;
+    await live.command('/reload'); await live.event('start', starts + 1);
+    await live.command('/name');
+    await live.waitForScreen(rows => rows.some(row => row.trim() === `Session name: ${title}`), 'Pi still knows the saved title');
+    const rows = await status();
+    assert.ok(rows.includes('Recording: Off'), 'reload preserves the local capture switch');
+    assert.ok(rows.includes(`Session name: ${title}`), 'a new journal run is not the authority for the title');
+  } finally { await closeTerminals([live]); }
+});

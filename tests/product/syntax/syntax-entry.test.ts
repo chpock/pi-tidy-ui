@@ -54,6 +54,7 @@ function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'e
   const counts = { constructed: 0, load: 0, saves: 0, shared: 0, owned: 0 }, notices: string[] = [];
   const flags = new Map<string, string>();
   let saved: SettingsLoadResult = { ok: true, themePreference }, view = '';
+  let sessionName: string | undefined, sessionNameReads = 0;
   const store = settings ?? { async load() { counts.load++; return { ...saved }; },
     async update(patch: SettingsPatch) { counts.saves++; const { syntaxTheme, syntaxThemeVariant, ...switches } = patch;
       const current = saved.themePreference.kind === 'pi' ? { kind: 'pi' as const }
@@ -62,7 +63,7 @@ function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'e
         syntaxThemeVariant ?? saved.themePreference.variant) }; return { ok: true as const }; } };
   const ctx = { mode, hasUI: mode === 'tui', cwd: '/tmp', isIdle: () => true,
     sessionManager: { getSessionId: () => 'entry-fixture', getSessionFile: () => '/example/entry-fixture.jsonl',
-      getSessionName: () => { throw Error('Logging must not scan history for a session name'); } }, ui: { theme: themes.theme,
+      getSessionName: () => { sessionNameReads++; return sessionName; } }, ui: { theme: themes.theme,
       getEditorComponent: () => undefined, notify: (message: string) => notices.push(message),
       setWidget(_name: string, factory?: (tui: Container) => unknown) { factory?.(liveRoot ?? root); } } } as unknown as ExtensionContext;
   const pi = { registerToolRenderer: (resolver: ToolRendererResolver) => { rendererResolvers.push(resolver); },
@@ -79,6 +80,8 @@ function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'e
   cleanups.push(stop);
   return { root, ctx, counts, notices, events, rendererResolvers, ready, stop,
     setFlag(name: string, value: string) { flags.set(name, value); }, get view() { return view; },
+    set sessionName(name: string | undefined) { sessionName = name; }, get sessionNameReads() { return sessionNameReads; },
+    withMenu: (drive: Parameters<typeof withMenu>[2]) => withMenu(commands.get('tidy-ui')!.handler, ctx, drive),
     start: (event: unknown = { type: 'session_start', reason: 'startup' }) => events.get('session_start')!(event, ctx), command,
     async page(...path: string[]) { return view = await menuPage(commands.get('tidy-ui')!.handler, ctx, path); },
     async appearance(value: boolean) { return view = await setAppearance(commands.get('tidy-ui')!.handler, ctx, value); },
@@ -1682,6 +1685,7 @@ test('entry logging controls use public session metadata, remain alive while pre
   const h = fixture('tui', { root: directory });
   try {
     await h.start(); await settled();
+    h.sessionName = 'Readable session';
     await h.events.get('session_info_changed')!({ name: 'Readable session' }, h.ctx);
     await h.page('Status & troubleshooting', 'Diagnostic logs');
     assert.match(h.view, /entry-fixture/);
@@ -1714,11 +1718,47 @@ test('entry logging controls use public session metadata, remain alive while pre
 });
 
 
-test('entry logging escapes UI session metadata and separates switch/resume/reload runs without history scans', async () => {
+test('Diagnostic logs samples the Pi name only on page entry and explicit refresh', async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-menu-session-name-'));
+  const h = fixture('tui', { root: directory }, undefined, { appearanceEnabled: false, loggingEnabled: false });
+  try {
+    h.sessionName = 'Already named';
+    await h.start({ type: 'session_start', reason: 'resume' });
+    assert.equal(h.sessionNameReads, 0, 'starting diagnostics does not look up the name');
+    await h.withMenu(async menu => {
+      await menu.select('Status & troubleshooting');
+      await menu.select('Refresh status');
+      assert.equal(h.sessionNameReads, 0, 'support status refresh does not look up the name');
+      await menu.select('Diagnostic logs');
+      assert.match(menu.text(), /^Session name: Already named$/mu);
+      assert.equal(h.sessionNameReads, 1);
+      h.sessionName = 'New current name';
+      await menu.key('\x1b[B');
+      assert.match(menu.text(), /^Session name: Already named$/mu);
+      assert.equal(h.sessionNameReads, 1, 'frames and selection changes use the previous sample');
+      await menu.select('Refresh status');
+      assert.match(menu.text(), /^Session name: New current name$/mu);
+      assert.equal(h.sessionNameReads, 2);
+      h.sessionName = undefined;
+      await menu.select('Refresh status');
+      assert.match(menu.text(), /^Session name: unknown$/mu, 'clearing the name does not leave a stale label');
+      assert.equal(h.sessionNameReads, 3);
+      await menu.select('Back');
+      h.sessionName = 'Updated while away';
+      await menu.select('Diagnostic logs');
+      assert.match(menu.text(), /^Session name: Updated while away$/mu);
+      assert.equal(h.sessionNameReads, 4);
+    });
+    assert.deepEqual(await fs.readdir(directory), [], 'diagnostic name reads do not enable capture or create a journal');
+  } finally { await h.stop(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('entry logging escapes UI session metadata and separates switch/resume/reload runs', async () => {
   const root = await fs.mkdtemp(join(tmpdir(), 'tidy-log-session-events-')), h = fixture('tui', { root });
   try {
     await h.start(); await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot'); const first = debugLoggingDiagnostics()!;
     assert.equal(first.session, 'entry-fixture'); assert.equal(first.state, 'active');
+    h.sessionName = 'name\nforged\x1b[31m';
     await h.events.get('session_info_changed')!({ name: 'name\nforged\x1b[31m' }, h.ctx);
     await h.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(h.view, /name\\nforged\\x1b\[31m/);
     assert.equal(h.view.includes('name\nforged'), false);
