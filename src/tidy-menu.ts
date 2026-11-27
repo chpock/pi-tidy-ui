@@ -51,7 +51,7 @@ export class TidyMenu implements Component {
   private cacheVisit?: { clearedLayouts?: number };
   private cacheSnapshot?: CacheMenuSnapshot;
   private pageTimer?: ReturnType<typeof setInterval>;
-  private paintedSupport?: { items: Item[]; details: string[] };
+  private paintedStatus?: { items: Item[]; details: string[] };
   private sessionName?: string;
   private detailOffset = 0;
   private listHeight = 0;
@@ -79,6 +79,9 @@ export class TidyMenu implements Component {
     this.list = undefined;
   }
   invalidate(): void { this.listKey = ''; this.search.invalidate(); }
+  sessionNameChanged(): void {
+    if (!this.closed && this.page === 'logs') this.sessionName = this.owner.readSessionName();
+  }
   /** Confirmed external state changes the rollback point, not an active preview. */
   preferencesChanged(choice: ThemePreference): boolean {
     if (this.closed) return false;
@@ -102,8 +105,8 @@ export class TidyMenu implements Component {
   private open(page: Page): void {
     this.stopPageSampling();
     this.page = page; this.listKey = ''; this.detailOffset = 0; this.moved();
+    this.sessionNameChanged();
     this.startPageSampling(page);
-    if (page === 'logs') this.sessionName = this.owner.readSessionName();
     if (page === 'themes') {
       const visit = ++this.themeVisit; this.themePreviewed = false; this.themeVariant = undefined;
       this.themeLoading = true; this.themeLoadFailed = false; this.search.setValue('');
@@ -125,12 +128,12 @@ export class TidyMenu implements Component {
     if (isCacheMenuPage(page)) {
       this.cacheVisit ??= {};
       this.cacheSnapshot = this.owner.cacheDetails(page);
-    } else if (page !== 'support') return;
+    } else if (page !== 'support' && page !== 'logs') return;
     this.pageTimer = setInterval(() => {
-      if (page === 'support') {
+      if (page === 'support' || page === 'logs') {
         const state = this.owner.snapshot();
-        const support = { items: this.pageItems(state), details: this.summary(state) };
-        if (!isDeepStrictEqual(support, this.paintedSupport)) this.requestRender();
+        const status = { items: this.pageItems(state), details: this.summary(state) };
+        if (!isDeepStrictEqual(status, this.paintedStatus)) this.requestRender();
       } else {
         const snapshot = this.owner.cacheDetails(page);
         if (!isDeepStrictEqual(snapshot, this.cacheSnapshot)) { this.cacheSnapshot = snapshot; this.requestRender(); }
@@ -139,7 +142,7 @@ export class TidyMenu implements Component {
     this.pageTimer.unref?.();
   }
   private stopPageSampling(): void {
-    clearInterval(this.pageTimer); this.pageTimer = undefined; this.cacheSnapshot = undefined; this.paintedSupport = undefined;
+    clearInterval(this.pageTimer); this.pageTimer = undefined; this.cacheSnapshot = undefined; this.paintedStatus = undefined;
   }
   private resetThemePreview(): void {
     const original = this.originalTheme;
@@ -199,9 +202,6 @@ export class TidyMenu implements Component {
       case 'back': this.back(); return;
       case 'close': this.close(); return;
       case 'navigate': this.open(intent.page); return;
-      case 'refreshStatus':
-        if (this.page === 'logs') this.sessionName = this.owner.readSessionName();
-        this.feedback('Status refreshed.'); this.requestRender(); return;
       case 'toggle':
       case 'toggleVariant':
       case 'choosePi':
@@ -246,7 +246,7 @@ export class TidyMenu implements Component {
     if (root && state.selected.kind === 'pi' && this.selected.root === 'theme-variant') this.select('themes');
     const cachePage = isCacheMenuPage(this.page) ? this.page : undefined;
     const details = cachePage ? undefined : this.summary(state);
-    if (this.page === 'support') this.paintedSupport = { items: this.items, details: details! };
+    if (this.page === 'support' || logs) this.paintedStatus = { items: this.items, details: details! };
     const hasDetails = Number(!!cachePage || !!details?.length);
     const searchRows = this.page === 'themes' && !this.themeLoading && !this.themeLoadFailed && height >= 6 ? 1 : 0;
     const helpHeight = !themes && height >= 4 ? 2 : 0;

@@ -21,8 +21,8 @@ function syntaxSnapshot(): SyntaxMenuSnapshot {
 
 test('fixed page rows have unique stable widget values and closed data intentions', () => {
   const snapshot = state();
-  const counts: Record<TidyMenuPage, number> = { root: 6, themes: 34, support: 8, service: 1, logs: 4, cache: 2, cacheActivity: 1 };
-  const kinds = new Set(['toggle', 'toggleVariant', 'choosePi', 'chooseFamily', 'maintain', 'navigate', 'back', 'close', 'refreshStatus', 'refreshCache']);
+  const counts: Record<TidyMenuPage, number> = { root: 6, themes: 34, support: 8, service: 1, logs: 3, cache: 2, cacheActivity: 1 };
+  const kinds = new Set(['toggle', 'toggleVariant', 'choosePi', 'chooseFamily', 'maintain', 'navigate', 'back', 'close']);
   for (const [page, count] of Object.entries(counts) as [TidyMenuPage, number][]) {
     const rows = menuRows(page, snapshot, view);
     assert.equal(rows.length, count, page);

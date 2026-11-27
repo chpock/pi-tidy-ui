@@ -14,8 +14,8 @@ been reconstructed.
 
 ### Changed
 
-- Keep Status & troubleshooting up to date while open, without a manual refresh.
-  Diagnostic logs still offers Refresh status to reread the current session name.
+- Keep Status & troubleshooting and Diagnostic logs up to date while open,
+  without a manual refresh.
 - Open Display cache and Layout cache activity directly from Status &
   troubleshooting. Replace raw JSON with tables, readable memory sizes, and
   labeled values in narrow windows. Update the tables while open without a

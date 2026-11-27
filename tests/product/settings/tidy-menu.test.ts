@@ -120,14 +120,22 @@ test('troubleshooting polls only while open and repaints only when its own statu
   t.mock.timers.tick(1000); assert.equal(f.renderRequests, ++requests);
   assert.match(f.render().join('\n'), /Use Occipital highlighting\s+Off/u);
   await f.select('Diagnostic logs'); assert.equal(nameReads, 1);
-  assert.match(f.render().join('\n'), /Refresh status/u);
-  before = reads; t.mock.timers.tick(2000); assert.equal(reads, before); assert.equal(nameReads, 1);
-  await f.select('Refresh status'); assert.equal(nameReads, 2);
+  assert.doesNotMatch(f.render().join('\n'), /Refresh status/u);
+  requests = f.renderRequests; before = reads;
+  f.state.appearance = 'Not shown in logs';
+  t.mock.timers.tick(2000);
+  assert.equal(reads, before + 2, 'only one timer samples the open logs page');
+  assert.equal(f.renderRequests, requests, 'unrelated appearance changes do not repaint logs');
+  assert.equal(nameReads, 1, 'polling does not search Pi session history');
+  f.state.loggingEnabled = true;
+  t.mock.timers.tick(1000); assert.equal(f.renderRequests, ++requests);
+  assert.match(f.render().join('\n'), /Record diagnostic logs\s+On/u);
+  f.state.appearance = 'Changed appearance';
   await f.key('\x1b'); assert.match(f.render().join('\n'), /Appearance: Changed appearance/u);
   before = reads; t.mock.timers.tick(1000); assert.equal(reads, before + 1, 'Back resumes just one timer');
   await f.key('\x1b'); before = reads; t.mock.timers.tick(2000); assert.equal(reads, before, 'root has no timer');
-  await f.select('Status & troubleshooting'); f.menu.close();
-  before = reads; t.mock.timers.tick(2000); assert.equal(reads, before, 'closing stops sampling');
+  await f.select('Status & troubleshooting'); await f.select('Diagnostic logs'); f.menu.close();
+  before = reads; t.mock.timers.tick(2000); assert.equal(reads, before, 'closing logs stops sampling');
   assert.deepEqual(f.calls, []); assert.equal(f.prepared, 0); assert.equal(f.cacheReads, 0);
 });
 

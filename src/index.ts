@@ -591,6 +591,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   pi.on("session_info_changed", (event) => {
     // Async handlers may deliver old notifications last; reread current saved metadata once.
     footer.nameChanged();
+    activeMenu?.sessionNameChanged();
     diagnostics.journal?.nameChanged(event.name);
   });
   function quiesceSession(ctx: ExtensionContext): void {

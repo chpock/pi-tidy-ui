@@ -64,8 +64,7 @@ export function menuRows(page: TidyMenuPage, state: TidyMenuSnapshot, view: Menu
     ];
     case 'logs': return [item('logging', 'Record diagnostic logs', 'Record diagnostics even when appearance is off.', { kind: 'toggle', key: 'loggingEnabled' }, onOff(state.loggingEnabled)),
       ...(state.logs?.state === 'failed' ? [item('retryLogging', 'Retry recording', 'Retry the failed log destination.', { kind: 'maintain', action: 'retryLogging' })] : []),
-      item('snapshotLogs', 'Write state snapshot', 'Write the current state if recording is on.', { kind: 'maintain', action: 'snapshotLogs' }),
-      item('refresh-status', 'Refresh status', 'Read current log counters and paths.', { kind: 'refreshStatus' }), back];
+      item('snapshotLogs', 'Write state snapshot', 'Write the current state if recording is on.', { kind: 'maintain', action: 'snapshotLogs' }), back];
     case 'cache': return [
       item('clearCache', 'Clear saved layouts', 'Clear only display layouts; later frames rebuild them.', { kind: 'maintain', action: 'clearCache' }), back];
     case 'cacheActivity': case 'service': return [back];

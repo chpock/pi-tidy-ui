@@ -1718,7 +1718,7 @@ test('entry logging controls use public session metadata, remain alive while pre
 });
 
 
-test('Diagnostic logs samples the Pi name only on page entry and explicit refresh', async () => {
+test('Diagnostic logs samples the Pi name only on page entry and name notifications', async () => {
   const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-menu-session-name-'));
   const h = fixture('tui', { root: directory }, undefined, { appearanceEnabled: false, loggingEnabled: false });
   try {
@@ -1735,15 +1735,17 @@ test('Diagnostic logs samples the Pi name only on page entry and explicit refres
       await menu.key('\x1b[B');
       assert.match(menu.text(), /^Session name: Already named$/mu);
       assert.equal(h.sessionNameReads, 1, 'frames and selection changes use the previous sample');
-      await menu.select('Refresh status');
-      assert.match(menu.text(), /^Session name: New current name$/mu);
+      await h.events.get('session_info_changed')!({ name: 'Older notification' }, h.ctx);
+      assert.match(menu.text(), /^Session name: New current name$/mu, 'a delayed notification does not override the current name');
       assert.equal(h.sessionNameReads, 2);
       h.sessionName = undefined;
-      await menu.select('Refresh status');
+      await h.events.get('session_info_changed')!({}, h.ctx);
       assert.match(menu.text(), /^Session name: unknown$/mu, 'clearing the name does not leave a stale label');
       assert.equal(h.sessionNameReads, 3);
       await menu.select('Back');
       h.sessionName = 'Updated while away';
+      await h.events.get('session_info_changed')!({ name: h.sessionName }, h.ctx);
+      assert.equal(h.sessionNameReads, 3, 'notifications do not read Pi metadata on other pages');
       await menu.select('Diagnostic logs');
       assert.match(menu.text(), /^Session name: Updated while away$/mu);
       assert.equal(h.sessionNameReads, 4);

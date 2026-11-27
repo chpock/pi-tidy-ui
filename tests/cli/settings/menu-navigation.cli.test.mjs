@@ -242,7 +242,7 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
             const rows = live.tidyRows(), back = rows.indexOf('  Back');
             assert.ok(back >= 0, 'Back remains visible');
             if (spaced) assert.equal(rows[back - 1], '', 'there is an empty row above Back');
-            assert.equal(rows[back - (spaced ? 2 : 1)], '  Refresh status');
+            assert.equal(rows[back - (spaced ? 2 : 1)], '  Write state snapshot');
             return back - 1;
           };
           const gap = checkBackGap(true);
@@ -259,13 +259,10 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
           checkBackGap(false);
           await live.resize(120, 40);
           checkBackGap(true);
-          await live.selectTidyItem('Refresh status', false);
-          const before = live.tidyFrame();
-          await live.selectTidyItem('Refresh status');
-          assert.equal(bottomLine(), 'Status refreshed.');
-          assert.deepEqual(live.tidyFrame(), before, 'manual refresh on Diagnostic logs still uses the existing hint row');
+          assert.ok(!live.tidyRows().some(row => row.includes('Refresh status')));
+          await live.selectTidyItem('Write state snapshot', false);
           live.send('\x1b[B'); await live.settle();
-          assert.ok(live.tidyRows().includes('→ Back'), 'Down goes directly from Refresh status to Back');
+          assert.ok(live.tidyRows().includes('→ Back'), 'Down goes directly from Write state snapshot to Back');
           assert.equal(bottomLine(), 'Return to the previous page.');
         }
         if (page === 'Layout cache activity') checkSections('A cache miss', /^→ Back$/u);
@@ -406,6 +403,37 @@ for (const mode of ['regular', 'fullscreen']) test(`troubleshooting repaints a h
       assert.ok(live.tidyRows().some(row => /^Last runtime error: settings_read; .*; recovered$/u.test(row)));
       assert.ok(live.tidyRows().includes('→ Reapply terminal colors'));
       assert.deepEqual(readFileSync(config), previous);
+      assert.equal(live.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
+    } finally { await closeTerminals([live]); }
+  });
+
+for (const mode of ['regular', 'fullscreen']) test(`Diagnostic logs repaints journal counters without terminal input (${mode})`,
+  { timeout: 60000 }, async () => {
+    const driver = fileURLToPath(new URL('../../fixtures/live-status-driver.ts', import.meta.url));
+    const live = new PiTerminal(`live-diagnostic-logs-${mode}`, { mode, extensions: [driver],
+      tidyUiSettings: { nativeHighlightingEnabled: false, terminalColorsEnabled: false },
+      extraEnv: { TIDY_UI_TEST_LIVE_LOGS: '1' } });
+    try {
+      await live.ready(); await live.event('logs_watching');
+      await live.resize(120, 40); await live.openTidyMenu();
+      await live.selectTidyItem('Status & troubleshooting'); await live.selectTidyItem('Diagnostic logs');
+      await live.selectTidyItem('Write state snapshot');
+      await live.waitForScreen(() => live.tidyRows().includes('Done.'), 'explicit snapshot flushes the baseline');
+      assert.ok(!live.tidyRows().some(row => row.includes('Refresh status')));
+      const frame = live.tidyFrame();
+      writeFileSync(join(live.output, 'logs-record'), 'go');
+      await live.event('logs_recorded');
+      const { before } = live.events().find(event => event.type === 'logs_recorded');
+      assert.equal(before?.state, 'active');
+      assert.equal(before.pendingBytes + before.inFlightBytes, 0, 'the controlled record starts from a drained journal');
+      const row = `Records: ${before.records + 1}; writes: ${before.writes + 1}`;
+      await until(() => !live.rendering && live.tidyRows().includes(row), 'journal counters update without a frame fence');
+      const matchingRecords = () => readFileSync(before.path, 'utf8').split('[test] Controlled live journal record').length - 1;
+      await until(() => matchingRecords() > 0, 'the controlled record reaches the actual journal');
+      assert.equal(matchingRecords(), 1);
+      assert.ok(live.tidyRows().includes('→ Write state snapshot'));
+      assert.ok(live.tidyRows().includes('Done.'), 'sampling does not replace the previous action result');
+      assert.deepEqual(live.tidyFrame(), frame);
       assert.equal(live.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
     } finally { await closeTerminals([live]); }
   });

@@ -180,8 +180,8 @@ Actions borrow that currentness predicate and shared-switch save signal; they do
 | Terminal matching Off | Stop owned default-color application; while appearance is active, finite concrete-color sampling can still support local card calculations |
 | Native highlighting Off | Stop native work under the source-authority contract; do not stop a separately managed shared daemon or pretend uncertain old requests never executed |
 | Capture Off | Close/disable file capture, not runtime-health state or presentation |
-| Visible troubleshooting/cache-page sampling | Read existing status or maintained layout counters without changing them, reclassifying sources or retrying a provider |
-| Refresh status (Diagnostic logs) | Refresh the current Pi session name along with the existing status; do not write the journal |
+| Visible troubleshooting, logs or cache-page sampling | Read existing status or maintained layout counters without changing them, writing the journal, reclassifying sources or retrying a provider |
+| Pi session name notification | Reread current saved metadata for the open Diagnostic logs page; the existing journal rename handler is independent |
 | Clear saved layouts | Count and release live presentation layouts before repaint; show the count separately from current statistics and leave conversation/native syntax data alone |
 
 Explicit On/Reapply differs from automatic restoration and cleanup. A later footer owner's disposal of Toolview's footer clears Toolview's ownership record; a subsequent explicit action may call public `setFooter` again when the stock editor is eligible. Delayed automatic installation and cleanup still preserve later owners. See [footer ownership](footer-spec.md#scope-and-ownership).

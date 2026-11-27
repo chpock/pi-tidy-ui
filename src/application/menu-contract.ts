@@ -33,7 +33,7 @@ export interface TidyMenuOwner {
   act(action: TidyMenuAction): Promise<SyntaxMenuOutcome & { clearedLayouts?: number }>;
   /** Read existing counters on entry and once per second while this cache page is open. */
   cacheDetails(page: CacheMenuPage): CacheMenuSnapshot | undefined;
-  /** Read current Pi metadata on explicit Diagnostic logs navigation or refresh, never during render. */
+  /** Read current Pi metadata on logs entry or a name notification, never during render or polling. */
   readSessionName(): string | undefined;
 }
 export type CacheMenuPage = 'cache' | 'cacheActivity';
@@ -45,7 +45,7 @@ export type TidyMenuCommandIntent = { kind: 'toggle'; key: keyof Switches }
   | { kind: 'maintain'; action: TidyMenuMaintenanceKind };
 export type TidyMenuIntent = TidyMenuCommandIntent
   | { kind: 'navigate'; page: TidyMenuPage }
-  | { kind: 'back' | 'close' | 'refreshStatus' };
+  | { kind: 'back' | 'close' };
 export interface TidyMenuRow {
   value: string;
   label: string;
