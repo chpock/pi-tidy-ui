@@ -7,10 +7,13 @@ been reconstructed.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-27
+
 ### Added
 
 - For Git checkouts, `make dev-check` detects an outdated or replaced local
-  Occipital helper. Run `make build` once to record an existing installation.
+  Occipital helper. Run `make build` to rebuild and install the helper and record
+  the installation, including when upgrading an older checkout.
 
 ### Changed
 
