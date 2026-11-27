@@ -8,6 +8,7 @@ import { menuRows, menuDetails, menuAction, menuThemeChoice, menuPageTitle, menu
 const columnGap = 2;
 const submenuPadding = '  ';
 const diagnosticWidth = 98; // Fits the 96-column cache scope note plus the frame.
+const supportGroupCount = 3;
 function itemColumns(items: Item[], width = Infinity) {
   let label = 0, value = 0;
   for (const item of items) { label = Math.max(label, visibleWidth(item.label)); value = Math.max(value, visibleWidth(item.valueText ?? '')); }
@@ -232,7 +233,7 @@ export class TidyMenu implements Component {
     const summaries = wrappedDetails.flat();
     const available = room - fixed;
     const summaryRoom = Math.min(summaries.length, Math.max(0, Math.min(available - 1, minimumDetails),
-      available - Math.min(this.items.length + 1, this.page === 'support' ? 9 : 4) - (this.page === 'support' ? 3 : 0)));
+      available - Math.min(this.items.length + 1, this.page === 'support' ? 9 : 4) - (this.page === 'support' ? supportGroupCount : 0)));
     this.detailHeight = summaryRoom;
     this.frameInset = framed ? 1 : 0;
     this.detailLines = summaries;
@@ -240,9 +241,12 @@ export class TidyMenu implements Component {
     const summary = summaries.slice(this.detailOffset, this.detailOffset + summaryRoom).map(line => this.theme.fg('muted', line));
     const afterSummary = available - summary.length;
     const detailGap = !root && !themes && summary.length > 0 && afterSummary > Math.min(2, this.items.length) ? 1 : 0;
-    const groupRoom = this.page === 'support' && afterSummary - detailGap >= 8 ? 3 : 0;
+    const groupRoom = this.page === 'support' && afterSummary - detailGap >= 8 ? supportGroupCount : 0;
     const rootGap = root && sections && available > 2 ? 1 : 0;
-    const listSpace = Math.max(1, afterSummary - detailGap - groupRoom - rootGap);
+    const unspacedListRoom = afterSummary - detailGap - groupRoom - rootGap;
+    // Each titled group has one following gap. Keep all choices and headings ahead of these gaps.
+    const groupGapRoom = groupRoom && unspacedListRoom - this.items.length >= groupRoom ? groupRoom : 0;
+    const listSpace = Math.max(1, unspacedListRoom - groupGapRoom);
     const searchGap = searchRows && listSpace > 3 ? 1 : 0;
     const themeBoundaries: number[] = [];
     const dividerPadding = '  ';
@@ -258,7 +262,8 @@ export class TidyMenu implements Component {
     let separatorsLeft = wholeThemeListFits ? themeBoundaries.length : Math.min(1, themeBoundaries.length, Math.max(0, choiceSpace - 3));
     const backGap = searchRows && (wholeThemeListFits ? themeListHeight < choiceSpace : choiceSpace - separatorsLeft > 3) ? 1 : 0;
     const listRoom = choiceSpace - separatorsLeft - backGap;
-    const maxVisible = Math.max(1, listRoom - (wholeThemeListFits ? 0 : 1));
+    const wholeSupportListFits = this.page === 'support' && this.items.length <= listRoom;
+    const maxVisible = Math.max(1, listRoom - (wholeThemeListFits || wholeSupportListFits ? 0 : 1));
     const columns = itemColumns(this.pageItems(state, false), innerWidth);
     const formatted = this.items.map(item => {
       let label = truncateToWidth(item.label, columns.label, '…');
@@ -299,9 +304,14 @@ export class TidyMenu implements Component {
       if (separatorsLeft && index > 0 && index < maxVisible && themeBoundaries.includes(firstVisible + index)) {
         body.push(this.theme.fg('dim', `${dividerPadding}${'─'.repeat(dividerColumns)}${dividerPadding}`)); separatorsLeft--;
       }
-      const group = ['reapplyAppearance', 'reapplyColors'].includes(value ?? '') ? 'Appearance' : ['native', 'service'].includes(value ?? '') ? 'Code highlighting' : 'Diagnostics';
-      if (groupRoom && index < Math.min(maxVisible, this.items.length) && group !== previousGroup) {
-        body.push(this.theme.fg('dim', group)); previousGroup = group;
+      if (groupRoom && index < Math.min(maxVisible, this.items.length)) {
+        const group = value === 'back' ? '' : value === 'reapplyAppearance' || value === 'reapplyColors' ? 'Appearance'
+          : value === 'native' || value === 'service' ? 'Code highlighting' : 'Diagnostics';
+        if (group !== previousGroup) {
+          if (groupGapRoom && previousGroup) body.push('');
+          if (group) body.push(this.theme.fg('dim', group));
+          previousGroup = group;
+        }
       }
       this.mouseRows.set(body.length, { row: index, value: index < maxVisible ? value : undefined });
       body.push(row);

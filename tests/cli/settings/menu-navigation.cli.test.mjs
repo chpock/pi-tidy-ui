@@ -169,6 +169,45 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       const pages = { [support]: width() };
       checkSections('Code colors:', /^Appearance$/u);
       checkSupportArrows();
+      const groupEnds = [
+        [/^  Reapply terminal colors$/u, 'Code highlighting'],
+        [/^  Highlighting service details\s+›$/u, 'Diagnostics'],
+        [/^  Refresh status$/u, '  Back'],
+      ];
+      const groupGaps = spaced => {
+        const rows = live.tidyRows();
+        return groupEnds.map(([lastChoice, following]) => {
+          const end = rows.findIndex(row => lastChoice.test(row));
+          assert.ok(end >= 0, `${lastChoice} stays visible`);
+          if (spaced) assert.equal(rows[end + 1], '', `${lastChoice} is followed by an empty row`);
+          assert.equal(rows[end + (spaced ? 2 : 1)], following);
+          return end + 1;
+        });
+      };
+      const gaps = groupGaps(true);
+      if (mode === 'fullscreen') {
+        const x = live.tidyFrame().left + 4;
+        const config = join(live.agent, 'extensions/pi-tidy-ui/config.json'), original = readFileSync(config);
+        for (const y of gaps) {
+          live.send(`\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`);
+          await live.settle();
+          assert.ok(live.tidyHeading(support));
+          assert.equal(live.tidyRows().find(row => row.startsWith('→ ')), '→ Reapply Tidy UI appearance');
+        }
+        assert.deepEqual(readFileSync(config), original, 'clicking the gaps does not change settings');
+      }
+      const { top, bottom } = live.tidyFrame();
+      await live.resize(120, bottom - top + 1 - gaps.length);
+      groupGaps(false);
+      checkSections('Code colors:', /^Appearance$/u);
+      await live.resize(120, 40);
+      groupGaps(true);
+      await live.selectTidyItem('Reapply terminal colors', false);
+      live.send('\x1b[B'); await live.settle();
+      assert.match(live.tidyRows().find(row => row.startsWith('→ ')) ?? '', /^→ Use Occipital highlighting/u);
+      await live.selectTidyItem('Refresh status', false);
+      live.send('\x1b[B'); await live.settle();
+      assert.ok(live.tidyRows().includes('→ Back'), 'Down skips the last gap and lands on Back');
       const bottomLine = () => live.tidyRows()[live.tidyFrame().bottom - 3];
       await live.selectTidyItem('Refresh status', false);
       const before = live.tidyFrame(), hint = bottomLine();

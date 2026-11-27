@@ -14,6 +14,8 @@ been reconstructed.
 
 ### Changed
 
+- Leave a blank row after each group in Status & troubleshooting, including
+  directly above Back, when the popup is tall enough.
 - Separate diagnostic information from menu choices with a blank row. Show
   success and failure in the selected item’s single hint row until you navigate,
   without adding rows to the popup.
