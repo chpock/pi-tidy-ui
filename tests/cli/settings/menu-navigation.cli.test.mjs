@@ -1,6 +1,6 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { sliceByColumn } from '@earendil-works/pi-tui';
@@ -229,6 +229,18 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
         if (page === 'Diagnostic logs') {
           runAndSession = live.tidyRows().find(row => row.startsWith('Run: '));
           checkSections('Dropped records:', /^→ Record diagnostic logs/u);
+          const journalPath = () => {
+            const rows = live.tidyRows(), first = rows.findIndex(row => row.startsWith('Journal:'));
+            const next = rows.findIndex(row => row.startsWith('Session index:'));
+            assert.ok(first >= 0 && next > first + 1, 'the actual journal path spans multiple rows');
+            assert.match(rows[first], /^Journal: \/\S/u, 'the long path starts on the same row as Journal:');
+            return rows[first].slice('Journal: '.length) + rows.slice(first + 1, next).join('');
+          };
+          const journal = journalPath();
+          assert.ok(existsSync(journal), 'the displayed path is the complete path of an actual journal');
+          await live.resize(72, 40);
+          assert.equal(journalPath(), journal, 'resizing rewraps the same path without dropping characters');
+          await live.resize(120, 40);
         }
         if (page === 'Display cache') {
           for (let i = 0; i < 8 && !live.tidyRows().includes('End diagnostic JSON'); i++) {

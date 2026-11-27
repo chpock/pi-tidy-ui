@@ -27,6 +27,8 @@ been reconstructed.
 
 ### Fixed
 
+- Start long journal paths on the same row as `Journal:` in Diagnostic logs
+  instead of leaving the label on a row by itself.
 - Show Pi's current session name in Diagnostic logs, including after reload or
   resume and when recording is off.
 - Leave two spaces between submenu arrows and the right edge of `/tidy-ui` menus.

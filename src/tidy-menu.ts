@@ -2,6 +2,7 @@ import type { Theme } from '@earendil-works/pi-coding-agent';
 import { Input, SelectList, getKeybindings, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi,
   type Component, type TuiMouseEvent, type TuiMouseEventResult } from '@earendil-works/pi-tui';
 import { readableDiagnosticText } from './debug-log.ts';
+import { wrapText } from './text-wrap.ts';
 import { copyThemePreference, type ThemePreference, type ThemeVariant } from './appearance/theme-preference.ts';
 import type { TidyMenuAction, TidyMenuSnapshot, TidyMenuOwner, TidyMenuPage as Page, TidyMenuRow as Item, TidyMenuIntent } from './application/menu-contract.ts';
 import { menuRows, menuDetails, menuAction, menuThemeChoice, menuPageTitle, menuNavigation } from './application/menu-model.ts';
@@ -214,7 +215,7 @@ export class TidyMenu implements Component {
     const height = Math.max(1, Math.floor(this.height()));
     const state = this.owner.snapshot();
     this.items = this.pageItems(state);
-    const root = this.page === 'root', themes = this.page === 'themes';
+    const root = this.page === 'root', themes = this.page === 'themes', logs = this.page === 'logs';
     if (root && state.selected.kind === 'pi' && this.selected.root === 'theme-variant') this.select('themes');
     const details = this.summary(state);
     const hasDetails = Number(details.length > 0);
@@ -228,7 +229,9 @@ export class TidyMenu implements Component {
     const rule = this.theme.fg('border', '─'.repeat(innerWidth));
     const heading = sections ? [this.theme.fg('accent', this.theme.bold(menuPageTitle(this.page))), rule] : [];
     const fixed = heading.length + searchRows + (sections ? 2 : 0) + helpHeight;
-    const wrappedDetails = details.map(line => wrapTextWithAnsi(line, innerWidth));
+    const wrappedDetails = logs
+      ? details.map(line => visibleWidth(line) <= innerWidth ? [line] : wrapText(line, innerWidth, { wide: 'replace' }))
+      : details.map(line => wrapTextWithAnsi(line, innerWidth));
     let minimumDetails = hasDetails;
     if (searchRows) {
       const selection = wrappedDetails[0]!;
