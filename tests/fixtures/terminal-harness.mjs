@@ -105,7 +105,7 @@ export function createPtyOutputWriter(term) {
 export class PiTerminal {
   // The integration-profile helper may supply additional isolated settings, environment and explicit extensions.
   constructor(name, { tidyUi = false, mode = 'fullscreen', session, flags = [],
-    agentSettings = {}, extraEnv = {}, extensions = [], workspace, profileFactory, tidyUiSettings, jobControl = false, seedFixtures = true, dimensions = { columns: 100, rows: 80 } } = {}) {
+    agentSettings = {}, keybindings, extraEnv = {}, extensions = [], workspace, profileFactory, tidyUiSettings, jobControl = false, seedFixtures = true, dimensions = { columns: 100, rows: 80 } } = {}) {
     const inputs = readInputs(), python = toolPath('python3');
     this.output = join(artifacts, name);
     this.observeMenuBounds = extraEnv.TIDY_UI_TEST_MENU_GEOMETRY === '1';
@@ -166,6 +166,7 @@ export class PiTerminal {
       theme: 'dark', quietStartup: true, ...this.profile?.settings, ...agentSettings,
       enableAnalytics: false, enableInstallTelemetry: false,
     }));
+    if (keybindings) writeFileSync(join(this.agent, 'keybindings.json'), JSON.stringify(keybindings));
     this.term = new Terminal({ cols: columns, rows, scrollback: measuring ? 0 : 3000, allowProposedApi: true });
     observeRenderFrames(this.term, this);
     observeNativeReceipts(this.term, this);

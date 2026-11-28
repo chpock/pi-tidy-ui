@@ -9,6 +9,50 @@ import { PiTerminal, until } from '../../fixtures/terminal-harness.mjs';
 import { observedClearResult } from '../../fixtures/cache-menu-observation.ts';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
 
+for (const mode of ['regular', 'fullscreen']) test(`menu hints name the actual select and cancel keys (${mode})`,
+  { timeout: 60000 }, async () => {
+    const live = new PiTerminal(`menu-remapped-keys-${mode}`, { tidyUi: true, mode,
+      keybindings: { 'tui.select.confirm': ['f6', 'ctrl+g'], 'tui.select.cancel': ['ctrl+c', 'ctrl+q'] },
+      tidyUiSettings: { syntaxTheme: { kind: 'pi' }, nativeHighlightingEnabled: false },
+      dimensions: { columns: 120, rows: 38 } });
+    const confirm = '\x1b[17~', cancel = '\x11';
+    const step = async data => { live.send(data); await live.settle(); };
+    const expectHint = (pattern, absence = /\b(?:Enter|Esc)\b/iu) => {
+      const { bottom } = live.tidyFrame();
+      const navigation = live.tidyRows()[bottom - 1];
+      assert.match(navigation, pattern);
+      assert.doesNotMatch(navigation, absence);
+    };
+    try {
+      await live.ready(); await live.openTidyMenu();
+      const config = join(live.agent, 'extensions/pi-tidy-ui/config.json'), original = readFileSync(config);
+      const frame = live.tidyFrame();
+      assert.equal(frame.width, 61, 'bindings do not resize the popup');
+      expectHint(/\bf6 Select.*\bctrl\+q Close\b/iu);
+      await step('\r'); assert.ok(live.tidyHeading('Tidy UI'), 'Enter is no longer select');
+      await step(confirm); assert.ok(live.tidyHeading('Code color theme'));
+      expectHint(/\bf6 Select.*\bctrl\+q Back\b/iu);
+      await step('GitHub'); assert.ok(live.tidyRows().some(row => row.startsWith('→ GitHub')));
+      assert.ok(live.tidyRows().some(row => row.startsWith('Selected: GitHub')), 'the preview changed the current choice');
+      await step('\x1b'); assert.ok(live.tidyHeading('Code color theme'), 'Esc is no longer cancel');
+      await step(cancel); assert.ok(live.tidyHeading('Tidy UI'));
+      assert.ok(live.tidyRows().some(row => /^→ Code color theme\s+Follow Pi/u.test(row)), 'cancel restores the active choice');
+      assert.deepEqual(readFileSync(config), original, 'remapped cancel does not confirm the preview');
+
+      await live.selectTidyItem('Status & troubleshooting', false);
+      await step(confirm); assert.ok(live.tidyHeading('Status & troubleshooting'));
+      expectHint(/\bf6 Select.*\bctrl\+q Back\b/iu);
+      await live.selectTidyItem('Diagnostic logs', false);
+      await step('\x07'); assert.ok(live.tidyHeading('Diagnostic logs'), 'alternative select key still works');
+      await live.resize(24, 16);
+      expectHint(/\bctrl\+q Back.*PgUp\/PgDn/iu);
+      await step(cancel); assert.ok(live.tidyHeading('Status & troubleshooting'));
+      await step(cancel); assert.ok(live.tidyHeading('Tidy UI'));
+      await step(cancel); assert.equal(live.tidyFrame(), undefined, 'remapped cancel closes the root');
+      assert.equal(live.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
+    } finally { await closeTerminals([live]); }
+  });
+
 for (const mode of ['regular', 'fullscreen']) test(`menu keyboard bounds: real first/last, filtering and short popup (${mode})`,
   { timeout: 60000 }, async () => {
     const live = new PiTerminal(`menu-keyboard-bounds-${mode}`, { tidyUi: true, mode,

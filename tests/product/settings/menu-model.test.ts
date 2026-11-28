@@ -1,7 +1,7 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { menuRows, menuAction, menuThemeChoice, menuSnapshot, menuDetails, menuPageTitle, menuNavigation } from '../../../src/application/menu-model.ts';
+import { menuRows, menuAction, menuThemeChoice, menuSnapshot, menuDetails, menuPageTitle } from '../../../src/application/menu-model.ts';
 import type { TidyMenuSnapshot, TidyMenuPage, TidyMenuCommandIntent } from '../../../src/application/menu-contract.ts';
 import type { SyntaxMenuSnapshot } from '../../../src/application/syntax-menu.ts';
 import { cacheMenuDetails } from '../../../src/application/cache-menu.ts';
@@ -184,7 +184,7 @@ test('missing cache, inactive cache and unowned footer are not interchangeable w
     { entries: 0, rows: 0, retainedBytes: 0 });
 });
 
-test('page titles and native keyboard help retain their fixed wording', () => {
+test('page titles retain their fixed wording', () => {
   assert.equal(menuPageTitle('root'), 'Tidy UI');
   assert.equal(menuPageTitle('themes'), 'Code color theme');
   assert.equal(menuPageTitle('support'), 'Status & troubleshooting');
@@ -192,9 +192,6 @@ test('page titles and native keyboard help retain their fixed wording', () => {
   assert.equal(menuPageTitle('logs'), 'Diagnostic logs');
   assert.equal(menuPageTitle('cache'), 'Display cache');
   assert.equal(menuPageTitle('cacheActivity'), 'Layout cache activity');
-  assert.equal(menuNavigation('root'), '↑↓ Navigate · Enter Select · Esc Close');
-  for (const page of ['themes', 'support', 'service', 'logs', 'cache', 'cacheActivity'] as const)
-    assert.equal(menuNavigation(page), '↑↓ Navigate · Enter Select · Esc Back');
 });
 
 for (const reason of ['activation_deferred', 'worker_unavailable', 'exhausted_route'] as const) {

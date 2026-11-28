@@ -29,6 +29,35 @@ function itemColumns(items: Item[], width = Infinity) {
   return { label, value, arrow };
 }
 const safe = (value: string) => readableDiagnosticText(value);
+const keyLabel = (key: string) => key === 'enter' ? 'Enter' : key === 'escape' ? 'Esc' : key === 'ctrl+c' ? 'Ctrl+C' : key;
+function navigationHint(root: boolean, paged: boolean, width: number): string {
+  const kb = getKeybindings();
+  // Pi matches key names case-insensitively. Older versions pass arbitrary strings from the config.
+  const keys = (action: 'tui.select.confirm' | 'tui.select.cancel') => kb.getKeys(action)
+    .filter(key => key && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(key)).map(key => key.toLowerCase());
+  const cancelKeys = keys('tui.select.cancel');
+  // Ctrl+C closes the whole popup; paging and cancel are handled before list selection.
+  const cancelKey = cancelKeys.find(key => key !== 'ctrl+c') ?? (root && cancelKeys.includes('ctrl+c') ? 'ctrl+c' : undefined);
+  const confirmKey = keys('tui.select.confirm').find(key =>
+    key !== 'ctrl+c' && key !== 'pageup' && key !== 'pagedown' && !cancelKeys.includes(key));
+  const confirm = confirmKey && keyLabel(confirmKey);
+  const cancelLabel = cancelKey && keyLabel(cancelKey);
+  const cancel = cancelLabel && `${cancelLabel} ${root ? 'Close' : 'Back'}`;
+  const full = menuNavigation(confirm, cancel);
+  if (!paged) return full;
+  const paging = 'PgUp/PgDn';
+  const detailed = `${paging} details · ${full}`;
+  if (visibleWidth(detailed) <= width) return detailed;
+  const compact = ['↑↓', confirm, cancel, paging].filter(Boolean).join(' · ');
+  if (visibleWidth(compact) <= width) return compact;
+  const compactActions = [cancel && `${cancel} ·`, cancel, cancelLabel, confirm && `${confirm} Select`, confirm];
+  for (const action of compactActions) {
+    if (!action) continue;
+    const minimal = `${action} ${paging}`;
+    if (visibleWidth(minimal) <= width) return minimal;
+  }
+  return paging;
+}
 
 /** One invocation owns one overlay. Syntax/provider generations cannot retire it. */
 export class TidyMenu implements Component {
@@ -221,8 +250,9 @@ export class TidyMenu implements Component {
     const items = this.pageItems(this.owner.snapshot(), false);
     const columns = itemColumns(items);
     const content = 2 + columns.label + (columns.value ? columnGap + columns.value : 0) + columns.arrow;
-    // The main menu's extra width already covers the arrow's right padding.
-    const fitted = Math.min(72, Math.max(content, visibleWidth(menuPageTitle(this.page)), visibleWidth(menuNavigation(this.page))) + 2);
+    // The main menu's extra width covers the arrow's padding. Configured key names do not resize the popup.
+    const navigationWidth = visibleWidth(menuNavigation('Enter', this.page === 'root' ? 'Esc Close' : 'Esc Back'));
+    const fitted = Math.min(72, Math.max(content, visibleWidth(menuPageTitle(this.page)), navigationWidth) + 2);
     return this.page === 'root' ? Math.round(fitted * 1.2) : fitted;
   }
   private pageItems(state: TidyMenuSnapshot, filtered = true): Item[] {
@@ -366,11 +396,7 @@ export class TidyMenu implements Component {
       body.push('', this.theme.fg(this.outcome?.color ?? (cleared === undefined ? 'muted' : 'success'), truncateToWidth(line, innerWidth, '…')));
     }
     if (sections) {
-      const paged = summaries.length > summaryRoom;
-      let navigation = (paged ? 'PgUp/PgDn details · ' : '') + menuNavigation(this.page);
-      if (paged && visibleWidth(navigation) > innerWidth) navigation = '↑↓ · Enter · Esc Back · PgUp/PgDn';
-      if (paged && visibleWidth(navigation) > innerWidth) navigation = 'Esc Back · PgUp/PgDn';
-      body.push(rule, this.theme.fg('dim', navigation));
+      body.push(rule, this.theme.fg('dim', navigationHint(root, summaries.length > summaryRoom, innerWidth)));
     }
     const border = (text: string) => this.theme.fg('border', text);
     if (!framed) return body.slice(0, height).map(row => truncateToWidth(row, width));

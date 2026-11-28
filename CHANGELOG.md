@@ -9,6 +9,7 @@ been reconstructed.
 
 ### Fixed
 
+- Show Pi's configured select and cancel keys in `/tidy-ui` menu hints.
 - Show the confirmed result title on collapsed edit and write cards, including
   after restoring a saved session without expanding the cards.
 

@@ -194,7 +194,7 @@ Run **`/tidy-ui`**. No configuration file editing is needed for normal use.
 | Control | What it does |
 | --- | --- |
 | **Tidy UI appearance** | Toggle the custom cards, messages, input and footer |
-| **Code color theme** | Choose Follow Pi or search 32 OpenCode TUI theme families; navigation previews, Enter confirms, Escape restores the previous choice |
+| **Code color theme** | Choose Follow Pi or search 32 OpenCode TUI theme families; navigation previews; the configured select key confirms and the cancel key restores the previous choice |
 | **Code color variant** | Switch Dark/Light; disabled and skipped during navigation under Follow Pi, which remembers the last variant |
 | **Set terminal colors from Pi theme** | [Match terminal defaults to Pi's theme](#match-your-terminal-to-pis-theme). Off by default; active only while Tidy UI appearance is On |
 | **Status & troubleshooting** | Inspect actual state, toggle Occipital, reapply appearance/colors, inspect or record diagnostic logs, and view or clear saved display layouts |

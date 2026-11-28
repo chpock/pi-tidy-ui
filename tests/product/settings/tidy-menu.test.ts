@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { stripVTControlCharacters as plain } from 'node:util';
-import { visibleWidth } from '@earendil-works/pi-tui';
+import { getKeybindings, visibleWidth } from '@earendil-works/pi-tui';
 import { TidyMenu } from '../../../src/tidy-menu.ts';
 import { themeLabels } from '../../../src/application/menu-model.ts';
 import type { TidyMenuOwner, TidyMenuSnapshot, TidyMenuAction } from '../../../src/application/menu-contract.ts';
@@ -62,6 +62,40 @@ test('menu root exposes ordinary appearance choices only; first Enter navigates,
   assert.match(f.render().join('\n'), /Follow Pi theme/);
   await f.key('\x1b'); assert.match(f.render().join('\n'), /Tidy UI appearance/);
   assert.equal(f.cacheReads, 0);
+});
+
+test('navigation hints do not advertise unbound actions or label Ctrl+C as Back', async t => {
+  const f = fixture(), kb = getKeybindings(), previous = kb.getUserBindings();
+  t.after(() => { kb.setUserBindings(previous); f.menu.dispose(); });
+  const hint = () => f.render().at(-2)!;
+  kb.setUserBindings({ ...previous, 'tui.select.confirm': [], 'tui.select.cancel': [] });
+  assert.doesNotMatch(hint(), /\b(?:Select|Close)\b/u);
+  // Older Pi accepts string bindings containing controls; they must not reach the terminal.
+  kb.setUserBindings({ ...previous, 'tui.select.confirm': [], 'tui.select.cancel': ['broken\nbinding', 'f7'] as never });
+  assert.match(hint(), /f7 Close/u);
+  assert.doesNotMatch(hint(), /[\r\n]/u);
+  kb.setUserBindings({ ...previous, 'tui.select.confirm': ['Ctrl+C', 'PageUp', 'f6'] as never,
+    'tui.select.cancel': ['Ctrl+C'] as never });
+  assert.match(hint(), /f6 Select · Ctrl\+C Close/iu);
+  await f.key('\x1b[17~'); assert.equal(f.prepared, 1);
+  assert.match(hint(), /f6 Select/iu);
+  assert.doesNotMatch(hint(), /\b(?:Back|Esc|Ctrl\+C)\b/iu);
+  await f.key('\x03'); assert.equal(f.closed, 1);
+});
+
+test('narrow paged details retain the select key when cancel is unbound', async t => {
+  const f = fixture(70, 16), kb = getKeybindings(), previous = kb.getUserBindings();
+  t.after(() => { kb.setUserBindings(previous); f.menu.dispose(); });
+  f.state.logs = { state: 'active', capture: true, enabled: true, path: '/tmp/run.log', commonPath: '/tmp/sessions.log',
+    records: 8, writes: 8, dropped: 0, writeErrors: 0, run: 'run', session: 'session', pid: process.pid,
+    name: undefined, sessionFile: undefined, failure: undefined, commonFailed: false,
+    bytes: 1024, pendingBytes: 0, inFlightBytes: 0, rotations: 0, scans: 0, timer: false };
+  await f.select('Status & troubleshooting');
+  await f.select('Diagnostic logs');
+  kb.setUserBindings({ ...previous, 'tui.select.confirm': 'ctrl+g', 'tui.select.cancel': [] });
+  const hint = f.menu.render(24).map(plain).at(-2)!;
+  assert.match(hint, /ctrl\+g.*PgUp\/PgDn/u);
+  assert.doesNotMatch(hint, /\b(?:Enter|Esc|Back)\b/u);
 });
 
 test('terminal-color setting describes applying Pi defaults independently of effective status', async () => {

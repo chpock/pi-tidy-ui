@@ -16,7 +16,9 @@ const titles: Record<TidyMenuPage, string> = { root: 'Tidy UI', themes: 'Code co
   service: 'Highlighting service details', logs: 'Diagnostic logs', cache: 'Display cache', cacheActivity: 'Layout cache activity' };
 const onOff = (value: boolean) => value ? 'On' : 'Off';
 export const menuPageTitle = (page: TidyMenuPage) => titles[page];
-export const menuNavigation = (page: TidyMenuPage) => page === 'root' ? '↑↓ Navigate · Enter Select · Esc Close' : '↑↓ Navigate · Enter Select · Esc Back';
+export function menuNavigation(confirm: string | undefined, cancel: string | undefined): string {
+  return ['↑↓ Navigate', confirm && `${confirm} Select`, cancel].filter(Boolean).join(' · ');
+}
 
 export function themeLabels(themes: typeof THEME_FAMILIES): string[] {
   const labels = themes.map(theme => safe(theme.label));
@@ -47,7 +49,7 @@ export function menuRows(page: TidyMenuPage, state: TidyMenuSnapshot, view: Menu
       const query = (view.query ?? '').toLocaleLowerCase();
       const labels = themeLabels(THEME_FAMILIES);
       const choices = [item('theme:pi', 'Follow Pi theme', 'Use Pi’s code colors.', { kind: 'choosePi' }, state.selected.kind === 'pi' ? 'Selected' : undefined),
-        ...THEME_FAMILIES.map((family, index) => item(`theme:${family.id}`, labels[index]!, 'Preview this family. Enter saves; Esc restores the previous choice.',
+        ...THEME_FAMILIES.map((family, index) => item(`theme:${family.id}`, labels[index]!, 'Preview this family before saving.',
           { kind: 'chooseFamily', id: family.id }, state.selected.kind === 'theme' && state.selected.id === family.id ? 'Selected' : undefined))];
       return [...choices.filter(choice => choice.label.toLocaleLowerCase().includes(query) ||
         choice.value.slice(6).toLocaleLowerCase().includes(query)), back];
