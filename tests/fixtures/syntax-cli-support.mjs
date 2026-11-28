@@ -92,11 +92,12 @@ const body = dump => dump.tools.map(({ name, lines }) => ({ name, lines: lines.m
   .map(row => row.replace(/Took \d+(?:\.\d+)?s/g, 'Took <runtime>s')) }));
 
 function assertRestoredFilePreview(dump) {
-  const cards = body(dump).filter(({ name }) => name === 'write' || name === 'edit');
-  const text = cards.flatMap(({ lines }) => lines).join('\n');
-  assert.match(text, /← Write syntax\.ts/u);
-  assert.match(text, /← Edit syntax\.ts/u);
-  assert.doesNotMatch(text, /← Wrote syntax\.ts|← Edited syntax\.ts/u);
+  for (const [name, title] of [['write', /← Wrote syntax\.ts/u], ['edit', /← Edited syntax\.ts/u]]) {
+    const card = dump.tools.find(tool => tool.name === name);
+    assert.ok(card, `restored ${name} card exists`);
+    assert.equal(card.expanded, false, `Pi has not expanded the restored ${name} card`);
+    assert.match(card.lines.map(stripVTControlCharacters).join('\n'), title);
+  }
 }
 
 const traffic = terminal => terminal.events().filter(e => ['call', 'result', 'model_context'].includes(e.type));

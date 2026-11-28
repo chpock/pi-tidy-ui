@@ -47,8 +47,8 @@ export async function assertPreviewShebangReplay({ mode, fixture, descriptor, sh
     await terminal.ready(); await syntaxReady(terminal);
     const shown = await captureThenRenderDiagnostics(terminal, 'raw-preview');
     const visible = body(shown).flatMap(tool => tool.lines).join('\n');
-    assert.match(visible, /← Write preview-valid\.unknown/);
-    assert.match(visible, /← Write preview-invalid\.unknown/);
+    assert.match(visible, /← Wrote preview-valid\.unknown/);
+    assert.match(visible, /← Wrote preview-invalid\.unknown/);
     assert.doesNotMatch(visible, /HIDDEN_PREVIEW_TAIL/);
     const physical = shown.screen.join('\n');
     assert.match(physical, new RegExp(residue), 'later physical source rows survive multiline terminal-sequence cleanup');
