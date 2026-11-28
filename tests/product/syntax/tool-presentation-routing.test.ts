@@ -42,6 +42,12 @@ function routingHarness() {
   let argumentReads = 0;
   const compact = new Set<string>();
   const native = new Set<string>();
+  const sessions = new ToolPresentationSessions<Owner>({
+    args: node => node.args,
+    result: node => node.result,
+    funding: () => undefined,
+    failed: () => {},
+  });
   const producer = new ToolProducerPresenter<Owner>({
     name: node => node.name,
     id: node => node.id,
@@ -51,17 +57,9 @@ function routingHarness() {
     expanded: node => node.expanded,
     executionStarted: node => node.executionStarted,
     argsComplete: node => node.argsComplete,
-  });
-  const sessions = new ToolPresentationSessions<Owner>({
-    args: node => node.args,
-    result: node => node.result,
-    funding: () => undefined,
-    failed: () => {},
-  });
+  }, sessions.calls);
   const policy = new ToolPresentationPolicy(producer, sessions, {
     active: () => active,
-    name: node => node.name,
-    toolCallId: node => node.id,
     expanded: node => node.expanded,
     hidden: node => node.hidden,
     attached: node => node.attached,
@@ -84,6 +82,7 @@ function routingHarness() {
     compact,
     native,
     argumentReads: () => argumentReads,
+    refresh: (node: Owner) => producer.refresh(node, true),
     visibleWidths,
     active(value: boolean) { active = value; },
     nativeVisible(value: boolean) { nativeVisible = value; },
@@ -170,20 +169,22 @@ test('a deferred stock read pair does not replace current self-shell render visi
 });
 
 test('card selection reads the current name and argument envelope, not the saved format or execution state', () => {
-  const { policy } = routingHarness();
+  const { policy, refresh } = routingHarness();
   let unrelatedReads = 0, formatReads = 0;
   const args = new Proxy({ path: 'a.ts', edits: [] }, {
     getOwnPropertyDescriptor(target, key) { formatReads++; return Reflect.getOwnPropertyDescriptor(target, key); },
   });
   const result = { content: [], get details() { formatReads++; return { patch: '@@ -1 +1 @@\n-old\n+new' }; } };
   const node = owner('edit', args);
-  for (const key of ['id', 'result', 'partial', 'expanded', 'executionStarted', 'argsComplete'] as const) {
+  for (const key of ['result', 'partial', 'expanded', 'executionStarted', 'argsComplete'] as const) {
     const value = key === 'result' ? result : node[key];
     Object.defineProperty(node, key, { get() { unrelatedReads++; return value; } });
   }
   for (const name of ['read', 'write', 'edit', 'bash']) {
-    node.name = name;
-    assert.equal(policy.kind(node), name);
+    const candidate = owner(name, args);
+    for (const key of ['result', 'partial', 'expanded', 'executionStarted', 'argsComplete'] as const)
+      Object.defineProperty(candidate, key, Object.getOwnPropertyDescriptor(node, key)!);
+    assert.equal(policy.kind(candidate), name);
   }
   assert.deepEqual([unrelatedReads, formatReads], [0, 0]);
   node.name = 'external';
@@ -191,25 +192,28 @@ test('card selection reads the current name and argument envelope, not the saved
   node.name = 'edit';
   for (const invalid of [null, [], 'text']) {
     Reflect.set(node, 'args', invalid);
+    refresh(node);
     assert.equal(policy.kind(node), undefined);
   }
   node.args = args;
+  refresh(node);
   assert.equal(policy.fileSucceeded(node), true, 'a decision requiring result state reads the current result');
   assert.ok(unrelatedReads > 0);
   assert.equal(formatReads, 0, 'classifying an already captured call does not select its decoder either');
 });
 
 test('compact eligibility observes the arguments once even without a dedicated card', () => {
-  const { policy, argumentReads } = routingHarness();
+  const { policy, argumentReads, refresh } = routingHarness();
   const node = owner('external', { path: 'a.ts' });
   assert.equal(policy.eligible(node), true);
   assert.equal(argumentReads(), 1);
   Reflect.set(node, 'args', null);
+  refresh(node);
   assert.equal(policy.eligible(node), false);
   assert.equal(argumentReads(), 2);
 });
 
-test('an individual file-view decision observes the saved arguments and validates a successful path only once', () => {
+test('file-view decisions share saved arguments and validated paths across consumers', () => {
   const harness = routingHarness();
   const { policy } = harness;
   let pathReads = 0;
@@ -218,36 +222,41 @@ test('an individual file-view decision observes the saved arguments and validate
   const edit = owner('edit', args, changes);
   const write = owner('write', args, changes);
   const read = owner('read', args, changes);
-  const check = (label: string, decide: () => boolean | string | undefined, expected: boolean | string | undefined) => {
+  const check = (label: string, decide: () => boolean | string | undefined, expected: boolean | string | undefined, reads = 1) => {
     const before = harness.argumentReads();
     pathReads = 0;
     assert.equal(decide(), expected, label);
-    assert.deepEqual([harness.argumentReads() - before, pathReads], [1, 1], label);
+    assert.deepEqual([harness.argumentReads() - before, pathReads], [reads, reads], label);
   };
   check('file eligibility', () => policy.filePresentationEligible(write), true);
   check('edit preview decision', () => policy.filePreviewMode(edit), 'full');
-  check('write mode', () => policy.fileMode(write), 'full');
+  check('write mode', () => policy.fileMode(write), 'full', 0);
   check('expanded read', () => policy.readPresentationMode(read), 'full');
-  check('read mode', () => policy.fileMode(read), 'full');
-  check('read routing', () => harness.routing.fileIntent(read, 80), 'file');
-  check('edit routing at zero width', () => harness.routing.fileIntent(edit, 0), 'suppressed');
+  check('read mode', () => policy.fileMode(read), 'full', 0);
+  check('read routing', () => harness.routing.fileIntent(read, 80), 'file', 0);
+  check('edit routing at zero width', () => harness.routing.fileIntent(edit, 0), 'suppressed', 0);
 });
 
 test('the next file-view decision uses the current result and keeps the existing native overrides', () => {
-  const { policy, compact, native, routing } = routingHarness();
+  const { policy, compact, native, routing, refresh } = routingHarness();
   const result = { content: [{ type: 'text', text: 'saved result' }] };
   const edit = owner('edit', {}, { result, partial: true });
   assert.equal(policy.filePreviewMode(edit), 'preview', 'a partial result may lack a path');
   edit.partial = false;
+  refresh(edit);
   assert.equal(policy.filePreviewMode(edit), undefined, 'success requires a saved path');
   edit.result = { ...result, isError: true };
+  refresh(edit);
   assert.equal(policy.filePreviewMode(edit), 'preview', 'errors may lack a path');
   edit.result = result;
   edit.args.path = '/tmp/current.ts';
+  refresh(edit);
   assert.equal(policy.filePreviewMode(edit), 'preview');
   edit.result = { content: [{ type: 'image' }] };
+  refresh(edit);
   assert.equal(policy.filePreviewMode(edit), undefined, 'image results stay native');
   edit.result = result;
+  refresh(edit);
   native.add('edit');
   assert.equal(policy.filePreviewMode(edit), undefined, 'native override still wins for edit');
   native.delete('edit');

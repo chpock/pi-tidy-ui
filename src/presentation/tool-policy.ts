@@ -5,8 +5,6 @@ import { selectToolPresentationIntent, type ToolPresentationIntent } from './too
 
 export interface ToolPresentationFacts<Owner> {
   active(): boolean;
-  name(owner: Owner): string;
-  toolCallId(owner: Owner): string;
   expanded(owner: Owner): boolean;
   hidden(owner: Owner): boolean;
   attached(owner: Owner): boolean;
@@ -47,7 +45,7 @@ export class ToolPresentationPolicy<Owner extends object> {
   }
 
   fileSucceeded(owner: Owner): boolean {
-    const call = this.producer.capture(owner), kind = this.producer.kindFrom(call);
+    const call = this.producer.capture(owner), kind = this.kind(owner);
     const fileKind = kind === 'read' || kind === 'edit' || kind === 'write';
     return fileKind && call.hasResult && !call.partial && !call.resultFailed;
   }
@@ -58,7 +56,7 @@ export class ToolPresentationPolicy<Owner extends object> {
 
   filePresentationEligible(owner: Owner): boolean {
     const call = this.producer.capture(owner);
-    return this.fileEligible(owner, call, this.producer.kindFrom(call));
+    return this.fileEligible(owner, call, this.kind(owner));
   }
 
   private fileEligible(owner: Owner, call: ToolCallSnapshot, kind: ToolCardKind | undefined): boolean {
@@ -66,34 +64,35 @@ export class ToolPresentationPolicy<Owner extends object> {
     if (!this.facts.active() || this.facts.hidden(owner)) return false;
     if (kind === 'read' ? !this.overrides.compact.has(call.name) && this.overrides.native.has(call.name)
       : this.overrides.compact.has(call.name) || this.overrides.native.has(call.name)) return false;
-    if (call.hasResult && !call.partial && !call.resultFailed && !this.producer.readerFrom(call)?.path()) return false;
+    if (call.hasResult && !call.partial && !call.resultFailed && !this.producer.reader(owner)?.path()) return false;
     return kind === 'read' || !this.hasImage(owner);
   }
 
   readPresentationMode(owner: Owner): 'full' | undefined {
     const call = this.producer.capture(owner);
-    return this.producer.kindFrom(call) === 'read' && this.fileEligible(owner, call, 'read') && this.facts.expanded(owner) ? 'full' : undefined;
+    return this.kind(owner) === 'read' && this.fileEligible(owner, call, 'read') && this.facts.expanded(owner) ? 'full' : undefined;
   }
 
   filePreviewMode(owner: Owner): 'preview' | 'full' | undefined {
-    const call = this.producer.capture(owner), kind = this.producer.kindFrom(call);
+    const call = this.producer.capture(owner), kind = this.kind(owner);
     return kind === 'edit' || kind === 'write' ? this.fileModeFrom(owner, call, kind) : undefined;
   }
 
   fileMode(owner: Owner): 'preview' | 'full' | undefined {
     const call = this.producer.capture(owner);
-    return this.fileModeFrom(owner, call, this.producer.kindFrom(call));
+    return this.fileModeFrom(owner, call, this.kind(owner));
   }
 
   private fileModeFrom(owner: Owner, call: ToolCallSnapshot, kind: ToolCardKind | undefined): 'preview' | 'full' | undefined {
     if (!this.fileEligible(owner, call, kind)) return undefined;
     if (kind === 'read') return this.facts.expanded(owner) ? 'full' : undefined;
-    return this.sessions.fileMode(owner, this.facts.toolCallId(owner), this.facts.expanded(owner));
+    return this.sessions.fileMode(owner, call.id, call.expanded);
   }
 
   eligible(owner: Owner): boolean {
-    if (!this.facts.active() || this.facts.hidden(owner) || this.facts.expanded(owner) || !this.producer.hasArgs(owner)) return false;
-    const name = this.facts.name(owner), kind = this.producer.kindForName(name);
+    if (!this.facts.active() || this.facts.hidden(owner) || this.facts.expanded(owner)) return false;
+    const { name, kind, valid } = this.producer.selection(owner);
+    if (!valid) return false;
     const selected = kind === 'read'
       ? this.overrides.compact.has(name) || !this.overrides.native.has(name)
       : this.overrides.compact.has(name) || !this.overrides.cards.has(name) ||
@@ -102,13 +101,15 @@ export class ToolPresentationPolicy<Owner extends object> {
   }
 
   bashSourceSelected(owner: Owner): boolean {
-    return !this.overrides.compact.has(this.facts.name(owner)) && !this.overrides.native.has(this.facts.name(owner));
+    const { name } = this.producer.selection(owner);
+    return !this.overrides.compact.has(name) && !this.overrides.native.has(name);
   }
 
   ownedBash(owner: Owner): boolean {
-    const name = this.facts.name(owner);
-    return this.facts.active() && this.kind(owner) === 'bash' && !this.facts.hidden(owner) &&
-      !this.overrides.compact.has(name) && !this.overrides.native.has(name) && !this.hasImage(owner) && this.facts.attached(owner);
+    if (!this.facts.active()) return false;
+    const { name, kind } = this.producer.selection(owner);
+    return kind === 'bash' && !this.facts.hidden(owner) && !this.overrides.compact.has(name) && !this.overrides.native.has(name) &&
+      !this.hasImage(owner) && this.facts.attached(owner);
   }
 
   compactIntent(owner: Owner, width: number): boolean {
@@ -121,7 +122,7 @@ export class ToolPresentationPolicy<Owner extends object> {
   }
 
   fileIntent(owner: Owner, width: number): ToolPresentationIntent {
-    const call = this.producer.capture(owner), kind = this.producer.kindFrom(call);
+    const call = this.producer.capture(owner), kind = this.kind(owner);
     const selected = this.fileEligible(owner, call, kind) && (kind !== 'read' || this.facts.expanded(owner));
     return selectToolPresentationIntent(width, selected, false, false);
   }

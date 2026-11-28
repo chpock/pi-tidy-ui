@@ -82,19 +82,31 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
   const fileDetailLayout = (node: Owner, width: number) => ports.detail.layout(node, width)
     ?? { rows: nativeRows(node, width), framed: false, native: true };
   function executing(node: Owner): boolean {
-    return fields.executionStarted(node) && (fields.partial(node) || !fields.result(node)) &&
+    const call = producer.capture(node);
+    return call.executionStarted && (call.partial || !call.hasResult) &&
       (host.isTool(node) && policy.eligible(node) || policy.ownedBash(node) && sessions.layout(node)?.signature[0] === 'summary');
   }
   function restorePreview(node: Owner): void {
+    if (sessions.calls.peek(node)?.nativeInputsDirty) return;
     if (host.attached(node) && policy.fileTool(node) && policy.filePresentationEligible(node)) {
-      sessions.filePreview.observe(node, fields.id(node));
-      if (policy.fileSucceeded(node)) sessions.filePreview.finalize(node, fields.id(node));
+      sessions.calls.observe(node, fields.id(node));
+      if (policy.fileSucceeded(node)) sessions.calls.finalize(node, fields.id(node));
     }
   }
   function pause(node: Owner): void { pauseSyntax(node); animation.remove(node); }
   function attach(node: Owner): void {
+    const transferredUpdate = sessions.calls.peek(node)?.nativeInputsDirty === true;
+    if (transferredUpdate) {
+      producer.refresh(node);
+      forget(node, 'tool updated during renderer transfer');
+      sessions.dropPreparedLayout(node);
+      sessions.markFileSourcesDirty(node);
+    }
     preparation.observeFileTurn(node, true);
-    if (policy.filePresentationTool(node)) preparation.seedFileState(node); else observeSyntax(node);
+    if (policy.filePresentationTool(node)) {
+      const state = preparation.seedFileState(node);
+      if (transferredUpdate) { state.applied = false; state.refused = false; state.paintRetry = false; }
+    } else observeSyntax(node);
     prepareFileDetail(node);
   }
   function forget(node: Owner, cause = 'source or lifecycle changed', preserveFileDetail = false): void {
@@ -108,7 +120,7 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
     host.requestRender();
   }
   function remove(node: Owner): void {
-    sessions.filePreview.detach(node); forget(node); sessions.dropPreparedLayout(node);
+    sessions.calls.detach(node); forget(node); sessions.dropPreparedLayout(node);
     animation.remove(node); cards()?.remove(node); sessions.forgetSession(node);
   }
 
@@ -130,7 +142,7 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
   }
   function readImageRows<Rows extends readonly string[]>(node: Owner, width: number, rows: Rows, framed: boolean): Rows | string[] {
     sessions.clearImageWindow(node);
-    if (cardKind(node) !== 'read' || !fields.expanded(node) || !fields.result(node) || width < 1) return rows;
+    if (cardKind(node) !== 'read' || !fields.expanded(node) || !producer.capture(node).hasResult || width < 1) return rows;
     const geometry = cardGeometry(width, ports.padding());
     if (geometry.contentWidth < 1) return rows;
     const rendered = host.imageRows(node, geometry.contentWidth);
@@ -269,10 +281,10 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
       const rows = cardKind(node) === 'read' ? readImageRows(node, width, baseRows, prepared.scene.framed) : baseRows;
       return sessions.presentRows(node, rows, prepared.gap);
     }
-    const state = sessions.layout(node);
+    const state = sessions.layout(node), call = producer.capture(node);
     if (!state || state.gap === undefined || width < 1 || state.signature[1] !== width || host.hidden(node)
-      || state.signature[6] !== fields.result(node) || state.signature[7] !== fields.expanded(node) || state.signature[8] !== fields.partial(node)) return;
-    if (state.signature[5] !== fields.args(node)) return;
+      || state.signature[6] !== call.result || state.signature[7] !== call.expanded || state.signature[8] !== call.partial) return;
+    if (state.signature[5] !== call.args) return;
     if (!routing.fileVisible(node, width)) return [];
     const layout = state.pool.get(state.entry);
     if (!layout || layout.native) return undefined;
@@ -280,7 +292,10 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
     return sessions.presentRows(node, rows, state.gap ?? 0);
   }
   function render(node: Owner, width: number, originalRender: NativeToolRender<Owner, NativeRows>): NativeRows | string[] {
-    if (host.isTool(node)) sessions.setLastRenderWidth(node, width);
+    if (host.isTool(node)) {
+      if (!host.attached(node) || producer.updating(node)) return originalRender.call(node, width);
+      sessions.setLastRenderWidth(node, width);
+    }
     if (cardKind(node) === 'read') sessions.clearImageWindow(node);
     if (host.quiescing()) return cleanupRows(node, width) ?? originalRender.call(node, width);
     if (host.isTool(node)) preparation.observeFrame(node, width);
@@ -299,11 +314,6 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
       return sessions.presentRows(node, rows, previousLayout(node, width) ? 1 : 0);
     }
     if (width >= 1 && host.isTool(node) && routing.file(node, width)) {
-      if (!host.attached(node)) {
-        animation.remove(node); pauseSyntax(node);
-        const rows = originalRender.call(node, width);
-        return nativeGap(node, width, rows) ? ['', ...rows] : rows;
-      }
       const hidden = !routing.fileVisible(node, width);
       if (hidden) { animation.remove(node); pauseSyntax(node); return []; }
       if (fileSucceeded(node)) {
@@ -342,7 +352,7 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
     return presentSummary(node, width);
   }
   function mouse(node: Owner, event: TuiMouseEvent, originalRender: NativeToolRender<Owner, NativeRows>, originalMouse: NativeToolMouse<Owner>): TuiMouseEventResult | undefined {
-    if (!host.active()) return originalMouse.call(node, event);
+    if (!host.active() || host.isTool(node) && (!host.attached(node) || producer.updating(node))) return originalMouse.call(node, event);
     if (event.width < 1 && filePreviewMode(node) !== undefined) { pauseSyntax(node); return undefined; }
     if (host.quiescing()) return undefined;
     if (event.width > 0 && host.isTool(node) && routing.bash(node, event.width)) {
@@ -360,7 +370,7 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
       if (imageWindow && imageWindow.width === event.width && imageWindow.start < event.height &&
         event.y >= imageWindow.start && event.y < Math.min(imageWindow.end, event.height)) return undefined;
       if (!host.attached(node) || !routing.fileVisible(node, event.width)) return originalMouse.call(node, event);
-      if (!fields.result(node) || fields.partial(node) || event.type !== 'click' || event.button !== 'left' || host.selection()) {
+      if (event.type !== 'click' || event.button !== 'left' || !producer.capture(node).hasResult || producer.capture(node).partial || host.selection()) {
         if (cardKind(node) === 'read') return undefined;
         const mode = fileMode(node);
         if (mode === undefined || mode === 'full' && cardKind(node) !== 'read' && unsupportedFullFile(node)) {
@@ -389,7 +399,7 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
       if (!hit) return undefined;
       if (cardKind(node) === 'read') host.setExpanded(node, !fields.expanded(node));
       else {
-        sessions.filePreview.toggle(node, fields.id(node), fields.expanded(node));
+        sessions.calls.toggle(node, fields.id(node), fields.expanded(node));
         if (fields.expanded(node)) host.setExpanded(node, false);
         else { forget(node, 'file preview expanded or collapsed'); sessions.dropPreparedLayout(node); observeSyntax(node); }
       }
@@ -403,7 +413,7 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
     }
     const offset = gap(node, event.width), summary = summaryLayout(node, event.width).rows;
     const localY = event.y - offset;
-    if (!fields.result(node) || fields.partial(node) || event.type !== 'click' || event.button !== 'left' ||
+    if (event.type !== 'click' || event.button !== 'left' || !producer.capture(node).hasResult || producer.capture(node).partial ||
       cardKind(node) === 'read' && host.selection() ||
       (cardKind(node) === 'read'
         ? !insidePanel(cardGeometry(event.width, ports.padding()), summary.length, event.x, localY)
@@ -417,19 +427,32 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
     return previous && !previous.separator ? ['', ...rows] : rows;
   }
   function update(node: Owner, name: ToolUpdateName, args: unknown[], method: NativeToolUpdate<Owner>): unknown {
+    if (name === 'setShowImages' || name === 'setImageWidthCells') {
+      sessions.clearImageWindow(node);
+      return method.apply(node, args);
+    }
+    if (!host.attached(node)) {
+      // A pending renderer transfer keeps its record; an ordinary detach already removed it.
+      const retained = sessions.calls.peek(node);
+      if (retained) retained.nativeInputsDirty = true;
+      return method.apply(node, args);
+    }
     sessions.clearImageWindow(node);
-    if (name === 'setShowImages' || name === 'setImageWidthCells') return method.apply(node, args);
     const preserveFileDetail = policy.fileTool(node) && (name === 'updateArgs' || name === 'updateResult' || name === 'setArgsComplete');
     const sameExpansion = name === 'setExpanded' && args[0] === fields.expanded(node);
     if (name !== 'markExecutionStarted' && !sameExpansion)
       forget(node, name, preserveFileDetail);
     if (host.quiescing() && name !== 'markExecutionStarted') sessions.dropPreparedLayout(node);
     if (policy.filePresentationTool(node) && (name === 'updateArgs' || name === 'updateResult' || name === 'invalidate')) sessions.markFileSourcesDirty(node);
-    if (name === 'invalidate') producer.forgetImageResult(fields.result(node));
-    const previousArgs = name === 'updateArgs' ? fields.args(node) : undefined;
-    const result = method.apply(node, args);
-    if (name === 'updateArgs') host.syncRendererArgs(node);
-    if (name === 'updateResult') producer.forgetImageResult(fields.result(node));
+    const previousArgs = name === 'updateArgs' ? producer.capture(node).args : undefined;
+    const inputsMayHaveChanged = name === 'updateArgs' || name === 'updateResult' || name === 'invalidate';
+    const result = producer.nativeUpdate(node, inputsMayHaveChanged, () => {
+      const value = method.apply(node, args);
+      if (name === 'updateArgs') host.syncRendererArgs(node);
+      return value;
+    });
+    if (!host.active() || !host.attached(node) || producer.updating(node)) return result;
+    producer.refresh(node);
     preparation.observeFileTurn(node, name === 'updateResult');
     if (name !== 'invalidate') ports.phase(node, name);
     observeSyntax(node, undefined, name === 'invalidate' || sameExpansion ? undefined : previousArgs ?? true);

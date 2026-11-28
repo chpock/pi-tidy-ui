@@ -18,10 +18,11 @@ export function summaryConsumer(tool: Tool, Summary = ToolSummaryPresenter) {
   const unexpected = (): never => assert.fail('compact-summary control reached a card/source/native-body path');
   const noop = () => {};
   let active = true;
-  const cache = new RenderCache(), producer = new ToolProducerPresenter(toolFields);
+  const cache = new RenderCache();
   const sessions = new ToolPresentationSessions({ args: toolFields.args, result: toolFields.result,
     funding: () => undefined, failed: unexpected });
-  const facts = { active: () => active, name: toolFields.name, toolCallId: toolFields.id, expanded: toolFields.expanded,
+  const producer = new ToolProducerPresenter(toolFields, sessions.calls);
+  const facts = { active: () => active, expanded: toolFields.expanded,
     hidden: () => false, attached: (owner: object) => active && owner === tool };
   const policy = new ToolPresentationPolicy(producer, sessions, facts, {
     cards: new Set<string>(), compact: new Set<string>(), native: new Set<string>(),
@@ -68,6 +69,9 @@ export function summaryConsumer(tool: Tool, Summary = ToolSummaryPresenter) {
     },
     updateResult(result: Tool['result'], partial = false) {
       view.update(tool, 'updateResult', [result, partial], () => tool.updateResult(result, partial));
+    },
+    invalidate() {
+      view.update(tool, 'invalidate', [], noop);
     },
     dispose() {
       view.remove(tool); active = false; spinner.reset(); cache.clear();

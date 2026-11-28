@@ -1,4 +1,4 @@
-import { FilePreviewState } from './file-preview-state.ts';
+import { ToolCallStates } from './tool-call-state.ts';
 import type { FilePreviewMode } from '../cards/file-preview-mode.ts';
 import { FileDetails } from './file-details.ts';
 import type { GeometryFunding } from '../resources/data-budget.ts';
@@ -82,7 +82,7 @@ export interface ToolDetailPorts<Owner extends object> {
 }
 
 export class ToolPresentationSessions<Owner extends object> {
-  readonly filePreview: FilePreviewState<Owner>;
+  readonly calls = new ToolCallStates<Owner>();
   readonly fileDetails: FileDetails<Owner>;
   private components = new WeakMap<Owner, ToolPresentationSession>();
   private layouts = new WeakMap<Owner, ToolLayoutState>();
@@ -92,7 +92,6 @@ export class ToolPresentationSessions<Owner extends object> {
 
   constructor(detailPorts: ToolDetailPorts<Owner>, constructionObserver?: PresentationConstructionObserver) {
     this.constructionObserver = constructionObserver;
-    this.filePreview = new FilePreviewState<Owner>();
     this.fileDetails = new FileDetails<Owner>(detailPorts);
   }
 
@@ -246,6 +245,6 @@ export class ToolPresentationSessions<Owner extends object> {
   }
 
   fileMode(owner: Owner, toolCallId: string, globallyExpanded: boolean): FilePreviewMode {
-    return this.filePreview.mode(owner, toolCallId, globallyExpanded);
+    return this.calls.mode(owner, toolCallId, globallyExpanded);
   }
 }

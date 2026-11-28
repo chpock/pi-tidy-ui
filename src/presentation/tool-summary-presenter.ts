@@ -67,17 +67,17 @@ export class ToolSummaryPresenter<Owner extends object> {
     const reusable = this.sessions.reusableLayout(owner, signature);
     if (reusable && isSummaryPresentationLayout(reusable)) return reusable;
     this.sessions.dropLayout(owner);
-    const value = this.buildRows(width, theme, padding, undefined, cwd, call);
+    const value = this.buildRows(owner, width, theme, padding, undefined, cwd, call);
     const kind: LayoutKind = 'summary';
     this.sessions.publishLayout(owner, signature, this.cache, kind, value);
     return value;
   }
 
   rows(owner: Owner, width: number, theme: CardTheme, padding: number, title?: string, cwd?: string): SummaryPresentationLayout {
-    return this.buildRows(width, theme, padding, title, cwd, this.producer.capture(owner));
+    return this.buildRows(owner, width, theme, padding, title, cwd, this.producer.capture(owner));
   }
 
-  private buildRows(width: number, theme: CardTheme, padding: number, title: string | undefined, cwd: string | undefined,
+  private buildRows(owner: Owner, width: number, theme: CardTheme, padding: number, title: string | undefined, cwd: string | undefined,
     call: ReturnType<ToolProducerPresenter<Owner>['capture']>): SummaryPresentationLayout {
     if (width < 1) return { rows: [], prefixLength: 0, prefixLeft: 0, prefixSpace: false };
     const available = width - padding, indent = padding + 2;
@@ -87,10 +87,10 @@ export class ToolSummaryPresenter<Owner extends object> {
     const statusColor: SummaryColor = failed ? 'error' : pending ? 'muted' : 'success';
     if (available < indent + 2) {
       const left = Math.min(padding, Math.max(0, width - 1 - padding));
-      const prefix = theme.fg(marker ? statusColor : failed ? 'error' : 'dim', ' '.repeat(left) + (marker || summaryGlyph(this.producer.kindFrom(call))));
+      const prefix = theme.fg(marker ? statusColor : failed ? 'error' : 'dim', ' '.repeat(left) + (marker || summaryGlyph(this.producer.kind(owner))));
       return { rows: [prefix], prefixLength: prefix.length, prefixLeft: left, prefixSpace: false };
     }
-    const reader = this.producer.readerFrom(call);
+    const reader = this.producer.reader(owner);
     const prefix = theme.fg(failed ? 'error' : 'dim', `${' '.repeat(padding)}${summaryGlyph(reader?.kind)} `);
     const parts: { color?: SummaryColor; text: string }[] = [{ color: 'toolTitle', text: title ?? summaryName(call.name) }];
     const { pattern, object, params } = argumentParts(call.name, reader?.summaryArgs() ?? call.args, cwd);

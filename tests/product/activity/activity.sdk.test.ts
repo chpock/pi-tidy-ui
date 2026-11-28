@@ -64,10 +64,10 @@ test("spinner clock ignores native/hidden/image/expanded/zero-width tools and dr
   tool.result = undefined;
   const { root, controller } = setup([branch]);
   try {
-    tool.expanded = true; tool.render(80);
-    tool.expanded = false; tool.hideComponent = true; tool.render(80);
-    tool.hideComponent = false; tool.result = { content: [{ type: "image" }] }; tool.isPartial = true; tool.render(80);
-    tool.result = undefined; tool.isPartial = false; tool.render(0);
+    tool.setExpanded(true); tool.render(80);
+    tool.setExpanded(false); tool.hideComponent = true; tool.render(80);
+    tool.hideComponent = false; tool.updateResult({ content: [{ type: "image" }] }, true); tool.render(80);
+    tool.updateResult(undefined); tool.render(0);
     assert.equal(intervals.mock.calls.length, 0);
     tool.render(80); assert.equal(intervals.mock.calls.length, 1);
     tool.setExpanded(true); assert.equal(clears.mock.calls.length, 1, "expansion stops immediately");

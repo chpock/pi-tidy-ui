@@ -16,7 +16,7 @@ test('compact summary consumer preserves shipped status and spinner policy', () 
     consumer.updateResult(undefined);
     assert.deepEqual(consumer.render(5), [' ⠋']);
     assert.doesNotMatch(consumer.render(80).join(''), /…/u);
-    tool.executionStarted = false;
+    tool.executionStarted = false; consumer.invalidate();
     assert.deepEqual(consumer.render(5), [' →']);
   } finally { consumer.dispose(); }
 });
@@ -48,7 +48,7 @@ test('completion marker constant can restore success and failure symbols without
       consumer.updateResult(undefined);
       assert.deepEqual(consumer.render(5), [' ⠋']);
       assert.match(plain(consumer.render(80).at(-1)!), /…$/u);
-      tool.executionStarted = false; assert.deepEqual(consumer.render(5), [' …']);
+      tool.executionStarted = false; consumer.invalidate(); assert.deepEqual(consumer.render(5), [' …']);
     } finally { consumer.dispose(); }
   });
 });

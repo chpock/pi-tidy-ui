@@ -1,6 +1,6 @@
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { shebangLanguage } from './shebang-language.ts';
-import type { FileCardInput, FileLogicalLine as DiffLine, FileView, SourceFileView, PreparedFileCard } from './file-model.ts';
+import type { FileCardInput, FileChangeClass, FileLogicalLine as DiffLine, FileView, SourceFileView, PreparedFileCard } from './file-model.ts';
 import { fileSources } from './file-sources.ts';
 import { cleanFileDisplayText as clean } from './file-display.ts';
 export const FILE_PREVIEW_MAX_UNITS = 8192;
@@ -24,28 +24,42 @@ const validNumber = (value: number) => Number.isSafeInteger(value) && value >= 0
 
 /** Stream source rows; validation-only callers need no temporary array of the whole diff. */
 export function* sourceRows(diff: string, trimFinalNewline = false, maxRows = Number.POSITIVE_INFINITY): Generator<string> {
-  const text = diff.replace(/\r\n?/gu, "\n");
-  const length = text.length - (trimFinalNewline && text.endsWith("\n") ? 1 : 0);
-  let start = 0, rows = 0;
-  do {
-    if (rows++ >= maxRows) return;
-    const newline = text.indexOf("\n", start), end = newline < 0 ? length : Math.min(newline, length);
-    yield text.slice(start, end); start = end + 1;
-  } while (start <= length);
+  const newline = /[\r\n]/gu;
+  let start = 0;
+  for (let row = 0; row < maxRows; row++) {
+    const match = newline.exec(diff);
+    if (!match) { yield diff.slice(start); return; }
+    yield diff.slice(start, match.index);
+    start = newline.lastIndex + Number(match[0] === "\r" && diff[newline.lastIndex] === "\n");
+    if (trimFinalNewline && start === diff.length) return;
+    newline.lastIndex = start;
+  }
 }
 
 /** Numbered context uses old-file coordinates; the unified projection uses new-file coordinates. */
-function numberedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">, logicalOnly = false, maxRows = Number.POSITIVE_INFINITY): DiffLine[] | undefined {
-  if (!diff) return [];
-  const result: DiffLine[] = [];
-  let delta = 0;
-  for (const row of sourceRows(diff, false, maxRows)) {
+function numberedDiff(diff: string, content: boolean, kinds: Set<" " | "+" | "-"> | undefined,
+  logicalOnly: boolean, maxRows: number, detectUnified = false): DiffLine[] | undefined {
+  const rows = sourceRows(diff, detectUnified, maxRows), result: DiffLine[] = [];
+  let delta = 0, collecting = kinds;
+  const unsupported = (row: string) => {
+    if (!detectUnified) return undefined;
+    // None of the prior valid numbered rows can start a unified hunk.
+    // An arbitrary preamble is allowed; continue from this row without rewinding.
+    function* remaining() { yield row; yield* rows; }
+    kinds?.clear();
+    return unifiedDiff(remaining(), content, kinds, logicalOnly, false);
+  };
+  for (const row of rows) {
     if (/^ +\.\.\.$/u.test(row)) { if (content) result.push({ kind: "gap" }); continue; }
     const match = /^([ +\-]) *(\d+) (.*)$/u.exec(row);
-    if (!match) return undefined;
+    if (!match) return unsupported(row);
     const kind = match[1] as " " | "+" | "-", number = Number(match[2]);
-    if (!validNumber(number) || number < 1 || (kind === " " && (!validNumber(number + delta) || number + delta < 1))) return undefined;
-    kinds?.add(kind);
+    if (!validNumber(number) || number < 1 || (kind === " " && (!validNumber(number + delta) || number + delta < 1))) return unsupported(row);
+    if (collecting) {
+      collecting.add(kind);
+      // A removal settles the type, but the remaining rows must still validate.
+      if (kind === '-') collecting = undefined;
+    }
     if (content) {
       const old = kind !== "+" ? number : undefined, next = kind === " " ? number + delta : kind === "+" ? number : undefined;
       const line = match[3]!;
@@ -55,16 +69,18 @@ function numberedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">
     if (kind === "+") delta++;
     if (kind === "-") delta--;
   }
+  // Detection skipped the terminal empty row in case this was unified.
+  if (detectUnified && (diff.endsWith('\n') || diff.endsWith('\r'))) return undefined;
   return result;
 }
 
 /** Accept single-file unified patches only, and validate hunk counts before painting any edits. */
-function unifiedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">, logicalOnly = false, maxRows = Number.POSITIVE_INFINITY, allowIncomplete = false): DiffLine[] | undefined {
-  if (!diff) return [];
+function unifiedDiff(rows: Iterable<string>, content: boolean, kinds: Set<" " | "+" | "-"> | undefined,
+  logicalOnly: boolean, allowIncomplete: boolean): DiffLine[] | undefined {
   const result: DiffLine[] = [];
   let old = 0, next = 0, oldRemaining = 0, newRemaining = 0, hunks = 0;
-  for (const row of sourceRows(diff, true, maxRows)) {
-    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$/u.exec(row);
+  for (const row of rows) {
+    const header = row[0] === '@' ? /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$/u.exec(row) : null;
     if (header) {
       if (oldRemaining || newRemaining) return undefined;
       old = Number(header[1]); next = Number(header[3]);
@@ -80,7 +96,11 @@ function unifiedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">,
     if (kind !== " " && kind !== "+" && kind !== "-") return undefined;
     if (kind !== "+" && --oldRemaining < 0) return undefined;
     if (kind !== "-" && --newRemaining < 0) return undefined;
-    kinds?.add(kind);
+    if (kinds) {
+      kinds.add(kind);
+      // A removal settles the type, but the remaining rows must still validate.
+      if (kind === '-') kinds = undefined;
+    }
     if (content) {
       const text = row.slice(1), oldLine = kind !== "+" ? old : undefined, nextLine = kind !== "-" ? next : undefined;
       const candidate = oldLine === 1 || nextLine === 1 ? shebangLanguage(text) : undefined;
@@ -97,25 +117,42 @@ function savedDiff(saved: FileCardInput['saved'], failed: boolean, content = tru
   logicalOnly = false, maxRows = Number.POSITIVE_INFINITY, allowIncomplete = false): DiffLine[] | "inline" | undefined {
   if (failed) return "inline";
   if (!saved) return "inline";
-  if (saved.format === 'unified') return typeof saved.value === 'string'
-    ? unifiedDiff(saved.value, content, kinds, logicalOnly, maxRows, allowIncomplete) : undefined;
-  return typeof saved.value === 'string' ? numberedDiff(saved.value, content, kinds, logicalOnly, maxRows) : undefined;
+  if (typeof saved.value !== 'string') return undefined;
+  if (saved.value === '') return [];
+  return saved.format === 'unified' ? unifiedDiff(sourceRows(saved.value, true, maxRows), content, kinds, logicalOnly, allowIncomplete)
+    : numberedDiff(saved.value, content, kinds, logicalOnly, maxRows, saved.format === 'detect');
 }
 type PreviewText = { text: string; omitted: boolean };
-function boundedPreview(source: string, maxUnits: number, maxRows: number, kind: 'source' | 'display'): PreviewText {
-  const prefix = source.slice(0, maxUnits).replace(/\r\n?/gu, "\n"), clipped = source.length > maxUnits;
-  // Display excerpts select cleaned rows; source windows must preserve original row boundaries.
-  const bounded = kind === 'display' ? clean(prefix) : prefix;
+export function filePreviewSource(source: string, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS): PreviewText {
+  const end = Math.min(maxUnits, source.length), clipped = source.length > end;
+  const rows: string[] = [];
+  let start = 0;
+  for (let index = 0; index < end; index++) {
+    const code = source.charCodeAt(index);
+    if (code !== 13 && code !== 10) continue;
+    // After a raw-unit cut, the old prefix excludes a final empty row. Another
+    // complete line is enough to prove an empty row at the row limit stays.
+    if (rows.length === maxRows) return { text: rows.join("\n"), omitted: true };
+    rows.push(source.slice(start, index));
+    if (code === 13 && index + 1 < end && source.charCodeAt(index + 1) === 10) index++;
+    start = index + 1;
+    if (rows.length === maxRows && (!clipped || rows.at(-1) !== ""))
+      return { text: rows.join("\n"), omitted: clipped || start < end };
+  }
+  if (clipped && rows.at(-1) === "") rows.pop();
+  if (!clipped && (start < end || end === 0)) {
+    if (rows.length === maxRows) return { text: rows.join("\n"), omitted: true };
+    rows.push(source.slice(start, end));
+  }
+  return { text: rows.join("\n"), omitted: clipped };
+}
+export function filePreviewText(source: string, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS): PreviewText {
+  // Pending display excerpts select cleaned rows rather than raw source rows.
+  const bounded = clean(source.slice(0, maxUnits).replace(/\r\n?/gu, "\n")), clipped = source.length > maxUnits;
   const end = clipped ? bounded.lastIndexOf("\n") : bounded.length;
   const complete = end < 0 ? "" : bounded.slice(0, end);
   const rows = Array.from(sourceRows(complete, true, maxRows + 1));
   return { text: rows.slice(0, maxRows).join("\n"), omitted: clipped || rows.length > maxRows };
-}
-export function filePreviewSource(source: string, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS): PreviewText {
-  return boundedPreview(source, maxUnits, maxRows, 'source');
-}
-export function filePreviewText(source: string, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS): PreviewText {
-  return boundedPreview(source, maxUnits, maxRows, 'display');
 }
 function previewRows(source: string, logicalOnly: boolean): DiffLine[] {
   if (!source) return [];
@@ -181,13 +218,19 @@ export function filePresentation(input: FileCardInput, content = true, logicalOn
     }
     return { label: 'Wrote', mode: 'code', lines, note: input.note };
   };
-  if (input.truncated === true) return suppliedCode();
-  const kinds = new Set<" " | "+" | "-">(), diff = savedDiff(input.saved, false, content, kinds, logicalOnly);
+  if (input.truncated === true || input.knownChange === 'Wrote') return suppliedCode();
+  const kinds = input.knownChange ? undefined : new Set<" " | "+" | "-">();
+  const diff = savedDiff(input.saved, false, content, kinds, logicalOnly);
   if (!diff) return undefined;
-  if (diff === "inline" || (!kinds.has("+") && !kinds.has("-"))) return suppliedCode();
-  if (kinds.has("-")) return { label: "Replaced", mode: "diff", lines: diff };
-  if (kinds.has(" ")) return { label: "Edited", mode: "diff", lines: diff };
-  return { label: "Created", mode: "code", lines: diff };
+  if (diff === "inline" || (kinds && !kinds.has("+") && !kinds.has("-"))) return suppliedCode();
+  const label = input.knownChange ?? (kinds!.has('-') ? 'Replaced' : kinds!.has(' ') ? 'Edited' : 'Created');
+  return { label, mode: label === 'Created' ? 'code' : 'diff', lines: diff };
+}
+
+export function classifySavedFileChange(input: FileCardInput): FileChangeClass | null {
+  if (!input.complete || input.failed || !input.path || input.kind === 'read') return null;
+  const label = filePresentation({ ...input, viewMode: 'full' }, false)?.label;
+  return label === 'Edited' || label === 'Created' || label === 'Replaced' || label === 'Wrote' ? label : null;
 }
 
 /** Lifecycle/demand preparation, never classifier work or a render-time callback.

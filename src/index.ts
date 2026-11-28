@@ -169,7 +169,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
         const animation = spinner.snapshot();
         diagnose(options.diagnostic, 'INFO', 'runtime', 'Presentation restoring native ownership; later owners remain untouched',
           { animationWakes: animation.wakes, animationRequests: animation.requests });
-        filePreviewState.reset();
+        toolSessions.calls.reset();
       }
       syntax?.dispose(); ownedSources?.dispose(); paletteOwner.dispose(); toolSessions.clearSyntax();
       if (full) { spinner.reset(); clearCache(); }
@@ -180,7 +180,6 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
   });
   const active = () => native.active, attached = (node: object) => native.attached(node);
   const toolFields = native.fields;
-  const toolProducer = new ToolProducerPresenter(toolFields);
   const spinner: PresentationSpinner<object> = new PresentationSpinner<object>({ active, quiescing: () => quiescing,
     executing: node => toolView.executing(node), attached, requestRender: () => tui.requestRender(), fields: toolFields, diagnostic: options.diagnostic });
   let lifecycleCallbacks = 0, lifecyclePhaseChanges = 0;
@@ -215,12 +214,12 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
     failed: (node, error) => diagnose(options.diagnostic, 'ERROR', 'file-detail', 'Expanded file details could not be measured',
       { call: toolFields.id(node), error: error instanceof Error ? error.name : 'UnknownError' }),
   }, options.presentationConstructionObserver);
+  const toolProducer = new ToolProducerPresenter(toolFields, toolSessions.calls);
   const fileDetails = toolSessions.fileDetails;
   const toolSummaryPresenter = new ToolSummaryPresenter(toolProducer, fileDetails, toolSessions, cache);
-  const filePreviewState = toolSessions.filePreview;
+  const filePreviewState = toolSessions.calls;
   const toolPresentationPolicy = new ToolPresentationPolicy(toolProducer, toolSessions, {
-    active, name: toolFields.name, toolCallId: toolFields.id,
-    expanded: toolFields.expanded, hidden: node => native.tool.hidden(node), attached,
+    active, expanded: toolFields.expanded, hidden: node => native.tool.hidden(node), attached,
   }, { cards, compact: overrides, native: nativeOverrides });
   let syntax: CardSources<object> | undefined;
   let cardClient = options.syntax?.client;

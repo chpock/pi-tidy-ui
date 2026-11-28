@@ -472,7 +472,8 @@ test("completed edit cards expand from panel cells but never margins, selection 
       assert.match(full, /← Edited example\.ts/, "the cell click expands the owned full card");
       assert.doesNotMatch(full, /FULL_OUTPUT/);
       assert.equal(edit.handleMouse(event(3, 1))?.handled, true, "the full card collapses back to its preview");
-      assert.match(edit.render(width).map(plain).join(""), /← Edit example\.ts/);
+      const preview = edit.render(width).map(plain).join("");
+      assert.match(preview, /← Edited example\.ts/);
     }
   } finally { controller.restore(); }
 });

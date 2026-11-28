@@ -86,7 +86,7 @@ test("write lifecycle is path-only compact until final success, including propos
     assert.equal(controller.cacheStats().ordinary.entries, 0); assert.equal(controller.cacheStats().cards.entries, 1);
     const height = tool.render(80).length;
     assert.ok(tool.handleMouse(mouse(height - 1))?.handled); assert.equal(tool.expanded, false);
-    assert.match(tool.render(80).join(""), /← Write example.ts/);
+    assert.match(tool.render(80).join(""), /← Created example\.ts/);
     assert.doesNotMatch(tool.render(80).join(""), /FULL_OUTPUT/);
     tool.updateArgs({ path: "new.ts", content: "NEW_CONTENT" }); tool.updateResult({ content: [] }); tool.setExpanded(true);
     assert.match(tool.render(80).join(""), /← Wrote new.ts/); assert.match(tool.render(80).join(""), /NEW_CONTENT/);
@@ -261,7 +261,7 @@ test("write metadata/native/compact/image/hidden guards remain authoritative in 
     assert.deepEqual(hidden.render(80), [], 'the self-shell remains hidden at widths where its native render is empty');
     assert.equal(follower.render(80)[0], " → read a.txt");
     const visible = hidden.render(24).map(plain).join('\n');
-    assert.match(visible, /Write example\.ts/);
+    assert.match(visible, /Wrote example\.ts/);
     assert.match(visible, /HIDDEN/);
     assert.doesNotMatch(visible, /NATIVE_VISIBLE/, 'a visible compatible foreign file call keeps the legacy custom preview');
     assert.equal(follower.render(24)[0], "", "a multi-row custom file preview keeps the successor separator");
@@ -338,7 +338,7 @@ test("actual SDK write keeps a provider-neutral full card in the owned renderer"
     assert.equal(native.mock.calls.length, 0, "stock content-shell writes need no discarded native rendering in full or preview mode");
     root.render(140); const builds = controller.cacheStats().builds;
     root.render(140); assert.equal(controller.cacheStats().builds, builds); assert.equal(controller.cacheStats().cards.entries, 4);
-    nodes[0]!.setExpanded(false); assert.match(nodes[0]!.render(140).map(plain).join(""), /← Write new.ts/);
+    nodes[0]!.setExpanded(false); assert.match(nodes[0]!.render(140).map(plain).join(""), /← Wrote new\.ts/);
     assert.equal(native.mock.calls.length, 0, "collapsing a write remains custom and lazy");
     const before = controller.cacheStats().builds;
     nodes[1]!.updateArgs({ path: "empty.ts", content: "const updated = 99;" });

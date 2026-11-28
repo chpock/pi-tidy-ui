@@ -2,13 +2,13 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { FilePreviewState } from '../../../src/presentation/file-preview-state.ts';
+import { ToolCallStates } from '../../../src/presentation/tool-call-state.ts';
 
 type Owner = { call: number };
 const owner = (call: number): Owner => ({ call });
 
 test('automatic write/edit presentation is bounded to the last ten successful live owners at turn end', () => {
-  const state = new FilePreviewState<Owner>();
+  const state = new ToolCallStates<Owner>();
   const calls = Array.from({ length: 11 }, (_, index) => ({ owner: owner(index), toolCallId: `write-${index}` }));
   calls.forEach(call => state.observe(call.owner, call.toolCallId));
   state.beginTurn();
@@ -23,7 +23,7 @@ test('automatic write/edit presentation is bounded to the last ten successful li
 });
 
 test('an active-turn file stays preview until its matching completion is finalized', () => {
-  const state = new FilePreviewState<Owner>();
+  const state = new ToolCallStates<Owner>();
   const pending = owner(1), toolCallId = 'write-pending';
   state.observe(pending, toolCallId);
   state.beginTurn();
@@ -35,7 +35,7 @@ test('an active-turn file stays preview until its matching completion is finaliz
 });
 
 test('parallel completion order does not replace live component order or turn success', () => {
-  const state = new FilePreviewState<Owner>();
+  const state = new ToolCallStates<Owner>();
   const calls = Array.from({ length: 11 }, (_, index) => ({ owner: owner(index), toolCallId: `edit-${index}` }));
   calls.forEach(call => state.observe(call.owner, call.toolCallId));
   state.beginTurn();
@@ -51,7 +51,7 @@ test('parallel completion order does not replace live component order or turn su
 });
 
 test('manual choices survive rolling-window changes, while global expansion temporarily overrides them', () => {
-  const state = new FilePreviewState<Owner>();
+  const state = new ToolCallStates<Owner>();
   const first = owner(1), second = owner(2);
   state.observe(first, 'write-1'); state.observe(second, 'write-2');
   state.beginTurn(); state.completed('write-1'); assert.equal(state.finalize(first, 'write-1'), true);
@@ -75,7 +75,7 @@ test('manual choices survive rolling-window changes, while global expansion temp
 });
 
 test('the live automatic window rolls across short, longer, and empty turns', () => {
-  const state = new FilePreviewState<Owner>();
+  const state = new ToolCallStates<Owner>();
   const calls = Array.from({ length: 11 }, (_, index) => ({ owner: owner(index), toolCallId: `write-${index}` }));
   calls.slice(0, 3).forEach(call => state.observe(call.owner, call.toolCallId));
   state.beginTurn();
@@ -104,7 +104,7 @@ test('the live automatic window rolls across short, longer, and empty turns', ()
 });
 
 test('a pending tool-call token is consumed by only the first attached final success', () => {
-  const state = new FilePreviewState<Owner>();
+  const state = new ToolCallStates<Owner>();
   const first = owner(1), reconstructed = owner(1);
   state.observe(first, 'same-call'); state.observe(reconstructed, 'same-call');
   state.beginTurn(); state.completed('same-call');
@@ -117,7 +117,7 @@ test('a pending tool-call token is consumed by only the first attached final suc
 
 
 test('finalize consumes only a completion for the observed owner and call ID', () => {
-  const state = new FilePreviewState<Owner>();
+  const state = new ToolCallStates<Owner>();
   const first = owner(1), second = owner(2), unknown = owner(3);
   state.observe(first, 'edit-1'); state.observe(second, 'edit-2'); state.beginTurn();
   state.completed('edit-2');
@@ -132,7 +132,7 @@ test('finalize consumes only a completion for the observed owner and call ID', (
 });
 
 test('re-observing an owner removes only its replaced automatic and current records', () => {
-  const state = new FilePreviewState<Owner>();
+  const state = new ToolCallStates<Owner>();
   const first = owner(1), second = owner(2);
   state.observe(first, 'write-1'); state.observe(second, 'write-2'); state.beginTurn();
   for (const [candidate, id] of [[first, 'write-1'], [second, 'write-2']] as const) {
@@ -152,7 +152,7 @@ test('re-observing an owner removes only its replaced automatic and current reco
   assert.equal(state.mode(first, 'write-1-later', false), 'preview');
   assert.equal(state.mode(second, 'write-2', false), 'full');
 
-  const current = new FilePreviewState<Owner>();
+  const current = new ToolCallStates<Owner>();
   const currentFirst = owner(3), currentSecond = owner(4);
   current.observe(currentFirst, 'edit-current-1'); current.observe(currentSecond, 'edit-current-2'); current.beginTurn();
   current.completed('edit-current-1'); assert.equal(current.finalize(currentFirst, 'edit-current-1'), true);
@@ -162,7 +162,7 @@ test('re-observing an owner removes only its replaced automatic and current reco
 });
 
 test('turn-end keeps only attached successful owners and ignores later completions', () => {
-  const state = new FilePreviewState<Owner>();
+  const state = new ToolCallStates<Owner>();
   const attached = owner(1), removed = owner(2);
   state.observe(attached, 'write-attached'); state.observe(removed, 'write-removed'); state.beginTurn();
   for (const [candidate, id] of [[attached, 'write-attached'], [removed, 'write-removed']] as const) {
@@ -181,7 +181,7 @@ test('turn-end keeps only attached successful owners and ignores later completio
 });
 
 test('recency follows observed order when successful calls complete in reverse order', () => {
-  const state = new FilePreviewState<Owner>();
+  const state = new ToolCallStates<Owner>();
   const calls = Array.from({ length: 11 }, (_, index) => ({ owner: owner(index), toolCallId: `reverse-${index}` }));
   calls.forEach(call => state.observe(call.owner, call.toolCallId)); state.beginTurn();
   for (const call of calls.toReversed()) {
@@ -193,8 +193,8 @@ test('recency follows observed order when successful calls complete in reverse o
   for (const call of calls.slice(1)) assert.equal(state.mode(call.owner, call.toolCallId, false), 'full');
 });
 
-function abandonedAutomaticOwner(): { state: FilePreviewState<Owner>; reference: WeakRef<Owner> } {
-  const state = new FilePreviewState<Owner>();
+function abandonedAutomaticOwner(): { state: ToolCallStates<Owner>; reference: WeakRef<Owner> } {
+  const state = new ToolCallStates<Owner>();
   let target: Owner | undefined = owner(99);
   const reference = new WeakRef(target), toolCallId = 'write-collected';
   state.observe(target, toolCallId); state.beginTurn(); state.completed(toolCallId); state.finalize(target, toolCallId);

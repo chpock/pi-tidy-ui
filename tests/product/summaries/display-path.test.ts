@@ -28,7 +28,7 @@ test('compact summaries: every owned file tool uses its render cwd without chang
     const { controller } = setup([tool]);
     try {
       const rows = tool.render(120).map(plain).join('\n');
-      assert.ok(rows.includes(`${name} /home/kot/recovery.md`), rows);
+      assert.ok(rows.includes(`${name === 'edit' ? 'Edited' : name} /home/kot/recovery.md`), rows);
       assert.deepEqual(tool.args, snapshot);
     } finally { controller.restore(); }
   }

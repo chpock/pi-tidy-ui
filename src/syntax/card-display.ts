@@ -1,7 +1,7 @@
 import { fileHeading, readHeading } from '../file-card.ts';
 import { prepareBashRegions, prepareCommand } from '../cards/bash-preparation.ts';
 import { prepareFileRows, prepareFileServices } from '../cards/file-preparation.ts';
-import type { PreparedFileCard } from '../cards/file-model.ts';
+import type { FileChangeClass, PreparedFileCard } from '../cards/file-model.ts';
 import type { CardMeasurements } from '../cards/preparation.ts';
 import type { CardDisplayInput } from '../cards/display-input.ts';
 import { measure, prepareMeasuredAppend, type MeasuredAppend } from '../rendering/measured-rows.ts';
@@ -54,7 +54,8 @@ function collectMeasurements(display: PreparedCard, take: (region?: PreparedRegi
 const refused = Symbol('card allocation refused');
 
 /** Owns only the measurements created by this synchronous construction. */
-export function beginDisplayBuild(funding: GeometryFunding, ticketId: number, nextGeometry: () => number) {
+export function beginDisplayBuild(funding: GeometryFunding, ticketId: number, nextGeometry: () => number,
+  observeChange?: (value: FileChangeClass | null) => void) {
   const created = new Set<DataCleanupReceipt>();
   let append: MeasuredAppend | undefined;
   const dispose = () => {
@@ -79,7 +80,7 @@ export function beginDisplayBuild(funding: GeometryFunding, ticketId: number, ne
     try {
       const old = previous.display;
       const built = input.kind === 'bash' ? buildBashDisplay(input, previous, old, entry.expanded, measurements, nextGeometry)
-        : buildFileDisplay(input, previous, old, entry.previousView === entry.nextView, measurements, ticketId, nextGeometry);
+        : buildFileDisplay(input, previous, old, entry.previousView === entry.nextView, measurements, ticketId, nextGeometry, observeChange);
       return { ...built, adoptMeasurements(previousMeasured) {
         if (append && !append.commit()) return undefined;
         const used = new Set<DataCleanupReceipt>();
@@ -112,28 +113,41 @@ function buildBashDisplay(input: BashInput, previous: PriorDisplay, old: Prepare
 }
 
 function buildFileDisplay(input: FileInput, previous: PriorDisplay, old: PreparedCard | undefined, sameView: boolean,
-  measurements: CardMeasurements, ticketId: number, nextGeometry: () => number): DisplayContents {
+  measurements: CardMeasurements, ticketId: number, nextGeometry: () => number,
+  observeChange?: (value: FileChangeClass | null) => void): DisplayContents {
   const prior = old?.kind === 'file' ? old : undefined;
-  const file = previous.sourceRevision === input.sourceRevision && sameView && previous.file ? previous.file : input.reader.prepareFile(input.viewMode ?? 'full', true);
+  const preview = input.viewMode === 'preview';
+  if (preview && observeChange && input.reader.classifyChange) {
+    const change = input.reader.classifyChange();
+    observeChange(change);
+    input = { ...input, knownChange: change };
+  }
+  const file = previous.sourceRevision === input.sourceRevision && sameView && previous.file ? previous.file
+    : !preview && input.knownChange === null ? undefined
+      : input.reader.prepareFile(input.viewMode ?? 'full', true, !preview ? input.knownChange ?? undefined : undefined);
+  if (!preview && observeChange) {
+    const label = file?.view.label;
+    observeChange(label === 'Edited' || label === 'Created' || label === 'Replaced' || label === 'Wrote' ? label : null);
+  }
   const error = !input.reader.call.partial && input.reader.failed;
   const { diagnostics, note } = prepareFileServices({ file, previous: prior, preview: input.viewMode === 'preview', diagnostics: input.diagnostics,
     sameService: previous.serviceRevision === input.serviceRevision && sameView, metadata: input.reader }, measurements);
   if (prior && file === previous.file && sameView)
-    return { file, display: reuseFileRows(input, previous, prior, file, { diagnostics, note, error }, measurements, nextGeometry) };
+    return { file, display: reuseFileRows(input, prior, file, { diagnostics, note, error }, measurements, nextGeometry) };
   const rows = prepareFileRows(file, ticketId, measurements);
-  return { file, display: Object.freeze({ kind: 'file', revision: input.revision, geometryStamp: nextGeometry(), path: file?.path, label: file?.view.label,
+  return { file, display: Object.freeze({ kind: 'file', revision: input.revision, geometryStamp: nextGeometry(), path: file?.path, label: input.knownChange ?? file?.view.label,
     mode: file?.view.mode, preview: file?.view.preview, omitted: file?.view.omitted, note, error, diagnostics,
     heading: file ? measurements.region(headingText(file, input), 'fragments') : undefined, rows }) };
 }
 
-function reuseFileRows(input: FileInput, previous: Pick<PriorDisplay, 'input'>, old: FileDisplay, file: PreparedFileCard | undefined,
+function reuseFileRows(input: FileInput, old: FileDisplay, file: PreparedFileCard | undefined,
   service: Pick<FileDisplay, 'error' | 'note' | 'diagnostics'>, measurements: CardMeasurements, nextGeometry: () => number): FileDisplay {
   const text = file ? headingText(file, input) : undefined;
-  const heading = previous.input?.cwd === input.cwd ? old.heading : text ? measurements.region(text, 'fragments') : undefined;
+  const heading = text === old.heading?.text ? old.heading : text ? measurements.region(text, 'fragments') : undefined;
   const sameGeometry = heading === old.heading && service.diagnostics === old.diagnostics && service.note === old.note;
-  return Object.freeze({ ...old, revision: input.revision, heading, ...service, geometryStamp: sameGeometry ? old.geometryStamp : nextGeometry() });
+  return Object.freeze({ ...old, revision: input.revision, label: input.knownChange ?? file?.view.label, heading, ...service, geometryStamp: sameGeometry ? old.geometryStamp : nextGeometry() });
 }
 
 function headingText(file: PreparedFileCard, input: FileInput): string {
-  return input.reader.kind === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label);
+  return input.reader.kind === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, input.knownChange ?? file.view.label);
 }

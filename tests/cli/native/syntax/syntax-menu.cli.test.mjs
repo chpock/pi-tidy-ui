@@ -40,8 +40,7 @@ test('occipital CLI: local palette picker, persisted selection and fresh default
         && s.source.dispatches > 0 && s.client.effective.id === paletteId);
       const restored = await captureThenRenderDiagnostics(replay, 'syntax-theme-restored');
       const restoredFiles = body(restored).filter(({ name }) => name === 'write' || name === 'edit').flatMap(({ lines }) => lines).join('\n');
-      assert.match(restoredFiles, /← Write syntax\.ts/u); assert.match(restoredFiles, /← Edit syntax\.ts/u);
-      assert.doesNotMatch(restoredFiles, /← Wrote syntax\.ts|← Edited syntax\.ts/u);
+      assert.match(restoredFiles, /← Wrote syntax\.ts/u); assert.match(restoredFiles, /← Edited syntax\.ts/u);
       assert.deepEqual(body(restored).filter(({ name }) => name !== 'write' && name !== 'edit'),
         body(themed).filter(({ name }) => name !== 'write' && name !== 'edit'), 'non-file tool bodies remain identical across session restore');
       assert.deepEqual(persisted(restored), persisted(initial));

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { PiTerminal, artifacts, plain, lines, byName, toolLines, assertFits, deferredNativePreparation } from '../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
-import { Terminal, nativeAfterMultiline, leadingBlanks, compactContent, summaryText, summaryExpected, errorSummaryColors, persisted } from '../../fixtures/main-cli-support.mjs';
+import { Terminal, nativeAfterMultiline, leadingBlanks, compactContent, summaryText, summaryExpected, errorSummaryColors, persisted, sgrAt } from '../../fixtures/main-cli-support.mjs';
 
 for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'representative saved diff shapes' : 'actual stock writes'} and lifecycle/native/replay`,
   { timeout: 180000 }, async () => {
@@ -74,7 +74,7 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
         assert.match(lines(dump.tools[0]).join('\n'), /WRITE_TAIL_19/); assert.doesNotMatch(lines(dump.tools[0]).join('\n'), /ARGS_CREATED_MUST_NOT_REPLACE_RESULT/);
         assert.ok(lines(dump.tools[1]).join('').replace(/[┃\s]/gu, '').includes('5+constADDED_WRITE=5;')); assert.doesNotMatch(lines(dump.tools[1]).join('\n'), /old1/);
         assert.ok(lines(dump.tools[2]).join('').replace(/[┃\s]/gu, '').includes('1-constBEFORE_WRITE=1;'));
-        assert.ok(lines(dump.tools[2]).join('').replace(/[┃\s]/gu, '').includes('1+constAFTER_WRITE=3;'));
+        assert.ok(lines(dump.tools[2]).join('').replace(/[┃\s]/gu, '').includes('12+constAFTER_WRITE=3;'));
         assert.ok(lines(dump.tools[3]).join('').replace(/[┃\s]/gu, '').includes('1-constERASED_WRITE=1;'));
         assert.match(lines(dump.tools[4]).join('\n'), /No changes\./);
         assert.ok(lines(dump.tools[6]).join('').replace(/[┃\s]/gu, '').includes('Difftruncatedbytool;showingsuppliedcontent.'));
@@ -126,13 +126,15 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
       for (const [index, label] of labels.entries()) {
         if (!label) continue;
         const tool = dump.tools[index], rows = lines(tool), text = rows.join('\n');
-        assert.ok(text.replace(/[┃\s]/gu, '').includes(`←Write${tool.args.path}`),
-          `the unexpanded restored preview uses its bounded file heading (width=${dump.width}, path=${JSON.stringify(tool.args.path)}, rows=${JSON.stringify(text)})`);
-        assert.doesNotMatch(text, /← (?:Created|Edited|Replaced) /u, 'a restored prefix does not claim full-source classification');
+        assert.ok(text.replace(/[┃\s]/gu, '').includes(`←${label}${tool.args.path}`),
+          `the restored preview shows the validated heading (width=${dump.width}, path=${JSON.stringify(tool.args.path)}, rows=${JSON.stringify(text)})`);
         assert.doesNotMatch(text, /WRITE_TAIL_19|PROPOSED_WRITE/u);
         assert.ok(rows.some(row => row.startsWith(' ┃'))); await assertFits(tool.lines, dump.width);
       }
       if (shape) {
+        const replacedPreview = lines(dump.tools[2]).join(' ').replace(/\s+/gu, '');
+        assert.match(replacedPreview, /ADDED_PREFIX_1/u, 'the replacement preview shows a prefix with only additions');
+        assert.doesNotMatch(replacedPreview, /BEFORE_WRITE|AFTER_WRITE/u, 'the later removal determines the title without entering the preview');
         const unsupportedPreview = lines(dump.tools[7]).join(' ').replace(/\s+/gu, ' ');
         assert.match(unsupportedPreview, /No saved file change details are available; expand for full validation\./u,
           'unsupported metadata in the bounded preview uses an owned limitation, not native full rendering');
@@ -154,7 +156,7 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
         const cell = dump.cells[start + keywordRow][body[keywordRow].indexOf('const')];
         assert.deepEqual({ fg: cell.fg, fgMode: cell.fgMode, dim: cell.dim }, await style(dump, 'syntaxKeyword'), 'restored preview paints the actual Pi keyword binding');
       }
-      captures.push({ width: dump.width, sourceLines: 10, labels: 'generic preview' });
+      captures.push({ width: dump.width, sourceLines: 10, labels: 'validated preview' });
     };
     const assertExpandedWriteError = (tool) => {
       const failure = lines(tool).map(plain).join('\n');
@@ -224,8 +226,10 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
       const clicked = await live.capture('pointer-write-clicked');
       assert.equal(clicked.tools[0].expanded, false, 'custom card selection does not mutate Pi native expansion state');
       assert.ok(clicked.tools.slice(1).every(tool => !tool.expanded));
-      assert.match(lines(clicked.tools[0]).join('\n'), /← Write write-(?:created|stock)\.ts/u, 'clicking an automatic full card selects the bounded preview');
-      const previewTitle = clicked.screen.findIndex(row => row.includes('← Write '));
+      const clickedText = lines(clicked.tools[0]).join('\n');
+      assert.match(clickedText, /Click to expand/u, 'clicking the automatic full card selects the preview');
+      assert.ok(clickedText.includes(`← ${labels[0]} ${clicked.tools[0].args.path}`), 'clicking preserves the validated heading');
+      const previewTitle = clicked.screen.findIndex(row => row.includes(`← ${labels[0]} ${clicked.tools[0].args.path}`));
       assert.ok(previewTitle >= 0); live.send(`\x1b[<0;3;${previewTitle + 1}M\x1b[<0;3;${previewTitle + 1}m`); await live.settle();
       const clickedFull = await live.capture('pointer-write-clicked-full');
       assert.equal(clickedFull.tools[0].expanded, false, 'manual full view remains separate from Pi expanded state');
@@ -389,7 +393,7 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
 
 test('real CLI: successful file cards roll across a batch and short turn; replay restores every preview', { timeout: 240000 }, async () => {
   const terminals = [], redraws = [];
-  const extraEnv = { TIDY_UI_TEST_WRITE_CARDS: '1', TIDY_UI_TEST_WRITE_CAPTURE: '1', TIDY_UI_TEST_NATIVE_PREPARATION: '1' };
+  const extraEnv = { TIDY_UI_TEST_WRITE_CARDS: '1', TIDY_UI_TEST_WRITE_CAPTURE: '1', TIDY_UI_TEST_NATIVE_PREPARATION: '1', TIDY_UI_TEST_FILE_CALL_WORK: '1' };
   const start = async (name, options = {}) => {
     const { rows = 240, ...terminalOptions } = options;
     const terminal = new PiTerminal(`write-window-${name}`, { ...terminalOptions, extraEnv }); terminals.push(terminal);
@@ -417,9 +421,9 @@ test('real CLI: successful file cards roll across a batch and short turn; replay
   const source = index => Array.from({ length: 12 }, (_, row) => `const ROLLING_${String(index).padStart(2, '0')}_ROW_${String(row).padStart(2, '0')} = ${row};`).join('\n');
   const state = (tool, index) => {
     const rendered = lines(tool).join('\n'), compact = rendered.replace(/[┃\s]/gu, ''), path = tool.args.path;
-    const full = compact.includes(`←Wrote${path}`), preview = compact.includes(`←Write${path}`) && !full;
+    const title = compact.includes(`←Wrote${path}`) ? 'Wrote' : compact.includes(`←Write${path}`) ? 'Write' : undefined;
     const tail = rendered.includes(`ROLLING_${String(index).padStart(2, '0')}_ROW_11`);
-    return { path, full, preview, tail, rendered };
+    return { path, title, full: title === 'Wrote' && tail, preview: !!title && !tail, tail, rendered };
   };
   const checkWindow = (dump, expectedFull, name) => {
     const writes = byName(dump, 'write'); assert.equal(writes.length, expectedFull.length, `${name}: exact saved-file count`);
@@ -432,7 +436,7 @@ test('real CLI: successful file cards roll across a batch and short turn; replay
       return { path: actual.path, full: actual.full, tail: actual.tail };
     });
     const physicalIndex = expectedFull.length - 1, visible = state(writes[physicalIndex], physicalIndex);
-    const title = visible.full ? `← Wrote ${visible.path}` : `← Write ${visible.path}`;
+    const title = `← ${visible.title} ${visible.path}`;
     assert.ok(physical.some(row => row.replace(/[┃\s]/gu, '').includes(title.replace(/[┃\s]/gu, ''))), `${name}: actual terminal viewport contains the newest file heading`);
     assert.equal(physical.some(row => row.includes(`ROLLING_${String(physicalIndex).padStart(2, '0')}_ROW_11`)), expectedFull[physicalIndex], `${name}: actual viewport shows the newest file tail only when full`);
     return states;
@@ -485,7 +489,7 @@ test('real CLI: successful file cards roll across a batch and short turn; replay
     recordRedraw(live, batch, 'after-batch');
     assert.deepEqual(deferredNativePreparation(live).attempts.filter(event => event.epoch === epoch), [], 'the 12 successful custom writes keep stock callbacks lazy');
 
-    const oldestTitle = batch.screen.findIndex(row => row.includes('← Write rolling-window-00.ts'));
+    const oldestTitle = batch.screen.findIndex(row => /← (?:Write|Wrote) rolling-window-00\.ts/u.test(row));
     assert.ok(oldestTitle >= 0, 'the oldest automatic card is physically available as a preview');
     live.send(`\x1b[<0;3;${oldestTitle + 1}M\x1b[<0;3;${oldestTitle + 1}m`); await live.settle();
     const manual = await captureReady(live, 'manual-oldest-full');
@@ -518,10 +522,45 @@ test('real CLI: successful file cards roll across a batch and short turn; replay
     const replayEpoch = replayProbe.probes.at(-1).epoch;
     const restored = await captureReady(replay, 'restored-all-preview');
     const restoredStates = checkWindow(restored, Array(13).fill(false), 'restored-all-preview'); recordRedraw(replay, restored, 'restored-all-preview');
+    const fileWork = () => replay.events().filter(event => ['test_file_build', 'test_file_class'].includes(event.type));
+    const restoredWork = fileWork();
+    assert.deepEqual(new Set(restoredWork.map(event => event.call)), new Set(byName(restored, 'write').map(tool => tool.id)),
+      'the probe observes real bounded construction for every restored write');
+    assert.deepEqual(restoredWork.filter(event => event.type === 'test_file_class').map(event => [event.call, event.value]).sort(),
+      byName(restored, 'write').map(tool => [tool.id, 'Wrote']).sort(), 'cold replay establishes each heading exactly once');
+    assert.ok(restoredWork.filter(event => event.type === 'test_file_build').every(event => event.mode === 'preview'),
+      'cold classification does not build any full body');
+    const tail = byName(restored, 'write').at(-1);
+    const clickTail = async (dump, title) => {
+      const y = dump.screen.findIndex(row => row.includes(`← ${title} ${tail.args.path}`));
+      assert.ok(y >= 0, 'the replayed call has its expected physical heading');
+      await sgrAt(replay, 2, y);
+    };
+    await clickTail(restored, 'Wrote');
+    const replayFull = await captureReady(replay, 'replay-selected-full');
+    assert.ok(state(byName(replayFull, 'write').at(-1), 12).full);
+    assert.deepEqual(fileWork().slice(restoredWork.length), [
+      { type: 'test_file_build', call: tail.id, mode: 'full', known: 'Wrote' },
+    ]);
+    await clickTail(replayFull, 'Wrote');
+    const replayPreview = await captureReady(replay, 'replay-selected-preview');
+    const collapsedWork = fileWork();
+    const condensed = state(byName(replayPreview, 'write').at(-1), 12);
+    assert.ok(condensed.preview); assert.equal(condensed.title, 'Wrote');
+    assert.deepEqual(collapsedWork.slice(restoredWork.length + 1), [{ type: 'test_file_build', call: tail.id, mode: 'preview', known: null }]);
+    await replay.observeAnimation();
+    assert.deepEqual(fileWork(), collapsedWork, 'unchanged physical frames do not rebuild or classify');
+    await clickTail(replayPreview, 'Wrote');
+    const replayFullAgain = await captureReady(replay, 'replay-selected-full-again');
+    assert.ok(state(byName(replayFullAgain, 'write').at(-1), 12).full);
+    assert.deepEqual(fileWork().slice(collapsedWork.length), [{ type: 'test_file_build', call: tail.id, mode: 'full', known: 'Wrote' }],
+      'full rows rebuild after release, but reuse the established type');
     assert.deepEqual(deferredNativePreparation(replay).attempts.filter(event => event.epoch === replayEpoch), [], 'restored history remains custom and cold');
     assert.deepEqual(sessionData(restored), sessionData(short), 'manual display choice is not persisted as Pi tool/session state');
     assert.deepEqual(replay.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)), []);
     assert.deepEqual(readFileSync(short.session), sessionBytes, 'replay reads the saved session without changing its bytes');
+    assert.ok(lines(byName(short, 'write')[2]).some(row => row.includes('← Wrote rolling-window-02.ts')),
+      'automatic demotion keeps the previously established result title in the real transcript');
     const coverage = { successfulFiles: 13, turns: ['12 successful files', 'empty', '1 successful file'],
       afterBatch: batchStates, afterShortTurn: shortStates, replay: restoredStates, redraws,
       counters: { calls: calls.length, results: results.length, modelContexts: 16 } };

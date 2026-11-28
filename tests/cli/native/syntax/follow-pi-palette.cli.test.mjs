@@ -24,9 +24,8 @@ const rgb = (dump, role) => {
 };
 function assertFollowPiPreview(dump) {
   const text = body(dump).filter(({ name }) => name === 'write' || name === 'edit').flatMap(({ lines }) => lines).join('\n');
-  assert.match(text, /← Write follow-pi\.md/u);
-  assert.match(text, /← Edit follow-pi\.md/u);
-  assert.doesNotMatch(text, /← Wrote follow-pi\.md|← Edited follow-pi\.md/u);
+  assert.match(text, /← Wrote follow-pi\.md/u);
+  assert.match(text, /← Edited follow-pi\.md/u);
   assert.match(text, /Preview is limited to a bounded source prefix/u);
   assert.match(text, /Click to expand/u);
   assert.doesNotMatch(text, /LIST_HEADING/u, 'rows beyond the restored prefix are not shown yet');
@@ -164,7 +163,8 @@ for (const mode of ['fullscreen', 'regular']) test(`Follow Pi CLI: ${mode} real 
     const reloadCold = reloaded.sample;
     assert.ok(await semanticPhaseReady(() => reloadCold, () => replay.events().slice(reloadBoundary), markers, 'pi'), 'new reload SOURCE and STYLE replies, not prior-run evidence');
     assertFollowPiPreview(reloaded); paintPreviewProof(reloaded);
-    assert.deepEqual(body(reloaded), body(collapsed)); assert.deepEqual(persisted(reloaded), saved); assert.equal(traffic(replay).length, 0);
+    assert.deepEqual(body(reloaded), body(restored), 'reload restores the same bounded preview including its validated headings');
+    assert.deepEqual(persisted(reloaded), saved); assert.equal(traffic(replay).length, 0);
     assert.equal(reloadCold.counts.sourceRequests, 5);
     await replay.observeAnimation(); assert.deepEqual(work(await settledStats(replay, 'reload-warm')), work(reloadCold));
     console.log(JSON.stringify({ followPiPhysical: { mode, live: terminal.output, replay: replay.output,

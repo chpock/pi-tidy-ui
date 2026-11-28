@@ -7,6 +7,11 @@ been reconstructed.
 
 ## [Unreleased]
 
+### Fixed
+
+- Show the confirmed result title on collapsed edit and write cards, including
+  after restoring a saved session without expanding the cards.
+
 ## [0.3.1] - 2026-11-27
 
 ### Added

@@ -188,7 +188,8 @@ export default function terminalDriver(pi: ExtensionAPI) {
       const diff = (value: string) => ({ diff: value });
       const details = args.fixtureCase === "created" ? diff(writeSource.split("\n").map((line, i) => `+${i + 1} ${line}`).join("\n")) :
         args.fixtureCase === "edited" ? diff(" 1 const old1 = 1;\n 2 const old2 = 2;\n 3 const old3 = 3;\n 4 const old4 = 4;\n+5 const ADDED_WRITE = 5;\n 5 const tail = 6;") :
-        args.fixtureCase === "replaced" ? { patch: "@@ -1,2 +1,2 @@\n-const BEFORE_WRITE = 1;\n-const OLD_WRITE = 2;\n+const AFTER_WRITE = 3;\n+const NEXT_WRITE = 4;\n" } :
+        args.fixtureCase === "replaced" ? { patch: "@@ -0,0 +1,11 @@\n" + Array.from({ length: 11 }, (_, i) => `+// ADDED_PREFIX_${i + 1}\n`).join("") +
+          "@@ -1,2 +12,2 @@\n-const BEFORE_WRITE = 1;\n-const OLD_WRITE = 2;\n+const AFTER_WRITE = 3;\n+const NEXT_WRITE = 4;\n" } :
         args.fixtureCase === "cleared" ? diff("-1 const ERASED_WRITE = 1;") :
         args.fixtureCase === "noop" ? { diff: "", noOp: true } : args.fixtureCase === "context-only" ? diff(" 1 const unchanged = 1;") :
         args.fixtureCase === "truncated" ? { diff: "+1 INCOMPLETE_DIFF", truncated: true } :

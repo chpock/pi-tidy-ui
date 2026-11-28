@@ -10,6 +10,7 @@ import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { installTidyUi } from '../../../src/index.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
 import { DataCharge } from '../../../src/resources/data-budget.ts';
+import { toolCards } from '../../../src/tool-adapters/registry.ts';
 import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const { ToolExecutionComponent } = await import(pathToFileURL(resolve(dist, 'modes/interactive/components/tool-execution.js')).href);
@@ -47,6 +48,163 @@ function reviewFixture(t: TestContext) {
 }
 const textRows = (rows: string[]) => rows.map(plain).join('\n');
 const move = { type: 'move', button: 'none', width: 60, height: 12, x: 2, y: 2, screenX: 2, screenY: 2 };
+
+test('a supported live write shares observed call facts across warm render, spacing and input', async t => {
+  const f = reviewFixture(t);
+  let pathReads = 0, argsReads = 0, nativeContextReads = 0, categoryLookups = 0;
+  const lookup = toolCards.get.bind(toolCards);
+  t.mock.method(toolCards, 'get', (name: string) => {
+    if (name === 'write') categoryLookups++;
+    return lookup(name);
+  });
+  const args = { get path() { pathReads++; return 'observed.ts'; }, content: 'SAVED_BODY' };
+  const write = f.tool('write', args), next = f.tool('ordinary', { value: 'NEXT_TOOL' });
+  write.updateResult({ content: [] }, false);
+  assert.match(textRows(f.render(write)), /SAVED_BODY/);
+  await tick();
+  const descriptor = Object.getOwnPropertyDescriptor(write, 'args')!;
+  assert.ok(descriptor && 'value' in descriptor);
+  Object.defineProperty(write, 'args', { configurable: true, get() { argsReads++; return descriptor.value; } });
+  t.after(() => { Object.defineProperty(write, 'args', descriptor); });
+  const nativeContext = write.getRenderContext;
+  t.mock.method(write, 'getRenderContext', function(this: typeof write, ...contextArgs: Parameters<typeof nativeContext>) {
+    const before = argsReads;
+    try { return nativeContext.apply(this, contextArgs); }
+    finally { nativeContextReads += argsReads - before; }
+  });
+  assert.ok(categoryLookups > 0, 'cold setup resolves the write producer');
+  pathReads = 0;
+  categoryLookups = 0;
+  for (const width of [60, 60, 50, 50]) {
+    assert.match(textRows(f.render(write, width)), /SAVED_BODY/);
+    assert.match(textRows(f.render(next, width)), /NEXT_TOOL/);
+    f.mouse(write, { ...move, width });
+  }
+  assert.deepEqual({ argsReads: argsReads - nativeContextReads, pathReads, categoryLookups }, { argsReads: 0, pathReads: 0, categoryLookups: 0 },
+    'warm presentation consumers reuse observations and producer selection; borrowing the native renderer state can still read host arguments');
+  write.setExpanded(true);
+  write.setExpanded(false);
+  assert.equal(categoryLookups, 0, 'changes to view alone do not recompute the selected producer');
+});
+
+test('completed writes retain their validated class across views and reject a stale class after a hidden diff change', async t => {
+  const f = reviewFixture(t), write = f.tool('write', { path: 'change-class.ts', content: '' });
+  const additions = '@@ -0,0 +1,12 @@\n' + Array.from({ length: 12 }, (_, i) => `+SAVED_ROW_${i}\n`).join('');
+  const details = { patch: additions };
+  write.updateResult({ content: [], details }, false);
+  const view = () => textRows(f.render(write));
+  assert.match(view(), /← Created change-class\.ts/u, 'the first prepared preview shows the exact class without expanding');
+  assert.doesNotMatch(view(), /SAVED_ROW_11/u);
+  write.setExpanded(true);
+  assert.match(view(), /← Created change-class\.ts/u);
+  assert.match(view(), /SAVED_ROW_11/u);
+  write.setExpanded(false);
+  assert.match(view(), /← Created change-class\.ts/u, 'the known class survives release of the full view');
+  assert.doesNotMatch(view(), /SAVED_ROW_11/u);
+  details.patch += '@@ -3 +15,0 @@\n-REMOVED_SUFFIX\n';
+  write.invalidate();
+  assert.match(view(), /← Replaced change-class\.ts/u, 'a same-object hidden change updates the exact heading without expanding');
+  assert.doesNotMatch(view(), /REMOVED_SUFFIX/u);
+  write.setExpanded(true);
+  assert.match(view(), /← Replaced change-class\.ts/u);
+  assert.match(view(), /REMOVED_SUFFIX/u);
+  write.setExpanded(false);
+  assert.match(view(), /← Replaced change-class\.ts/u);
+  await tick();
+  const warm = f.counts();
+  write.invalidate();
+  assert.match(view(), /← Replaced change-class\.ts/u);
+  await tick();
+  assert.deepEqual(f.counts(), warm, 'an unchanged invalidate does not recalculate the class or rebuild the preview');
+  details.patch += '@@ -1 +1,2 @@\n-OLD\n+ONE_MISSING\n';
+  write.invalidate();
+  assert.match(view(), /← Write change-class\.ts/u, 'an earlier removal does not certify a malformed hidden hunk');
+  assert.doesNotMatch(view(), /ONE_MISSING/u);
+});
+test('AFT file observations refresh same-object path and diff format independently', t => {
+  const f = reviewFixture(t), args = { path: 'before.ts', content: '' }, details = { diff: '+1 NUMBERED_SOURCE' };
+  const node = f.tool('write', args);
+  node.updateResult({ content: [], details }, false);
+  node.setExpanded(true);
+  const view = () => textRows(f.render(node));
+  assert.match(view(), /← Created before\.ts/u);
+  assert.match(view(), /NUMBERED_SOURCE/u);
+  args.path = 'after.ts'; node.invalidate();
+  assert.match(view(), /← Created after\.ts/u);
+  assert.doesNotMatch(view(), /before\.ts/u);
+  details.diff = '@@ -1 +1 @@\n-ORIGINAL_SOURCE\n+UNIFIED_SOURCE\n'; node.invalidate();
+  assert.match(view(), /← Replaced after\.ts/u);
+  assert.match(view(), /UNIFIED_SOURCE/u);
+  assert.doesNotMatch(view(), /NUMBERED_SOURCE/u);
+  details.diff = '+1 NUMBERED_AGAIN'; node.invalidate();
+  assert.match(view(), /← Created after\.ts/u);
+  assert.match(view(), /NUMBERED_AGAIN/u);
+  assert.doesNotMatch(view(), /UNIFIED_SOURCE/u);
+});
+
+test('a reentrant result update supersedes a file class validated before measurement', t => {
+  const f = reviewFixture(t), node = f.tool('write', { path: 'reentered.ts', content: '' });
+  const funding = f.sources.geometryFunding.bind(f.sources);
+  let grants = 0;
+  t.mock.method(f.sources, 'geometryFunding', (...args: Parameters<typeof funding>) => {
+    const current = funding(...args);
+    return current && { ...current, grant: (bytes: number) => {
+      if (++grants !== 2) return current.grant(bytes);
+      node.updateResult({ content: [], details: { patch: '@@ -1 +1 @@\n-FIRST_CLASS\n+LATEST_CLASS\n' } }, false);
+      return undefined;
+    } };
+  });
+  node.updateResult({ content: [], details: { patch: '@@ -0,0 +1 @@\n+FIRST_CLASS\n' } }, false);
+  assert.ok(grants > 2, 'the new result was admitted inside the old measurement');
+  assert.match(textRows(f.render(node)), /← Replaced reentered\.ts/u);
+  node.setExpanded(false);
+  const preview = textRows(f.render(node));
+  assert.match(preview, /← Replaced reentered\.ts/u);
+  assert.match(preview, /LATEST_CLASS/u);
+});
+
+test('a validated file class survives a later measurement refusal', t => {
+  const f = reviewFixture(t), node = f.tool('write', { path: 'measured.ts', content: '' });
+  const funding = f.sources.geometryFunding.bind(f.sources);
+  let grants = 0;
+  const denial = t.mock.method(f.sources, 'geometryFunding', (...args: Parameters<typeof funding>) => {
+    const current = funding(...args);
+    return current && { ...current, grant: (bytes: number) => ++grants === 1 ? current.grant(bytes) : undefined };
+  });
+  node.updateResult({ content: [], details: { patch: '@@ -0,0 +1 @@\n+VALID_SOURCE\n' } }, false);
+  assert.ok(grants > 1, 'the descriptor was admitted before a measurement grant was refused');
+  const refused = textRows(f.render(node));
+  assert.match(refused, /← Created measured\.ts/u, 'successful validation does not depend on measurement');
+  assert.doesNotMatch(refused, /VALID_SOURCE/u);
+  denial.mock.restore();
+  node.setExpanded(true);
+  node.setExpanded(false);
+  const preview = textRows(f.render(node));
+  assert.match(preview, /← Created measured\.ts/u);
+  assert.match(preview, /VALID_SOURCE/u);
+});
+
+test('replacing a call identity on the same native owner retires the old file facts', t => {
+  const f = reviewFixture(t), node = f.tool('write', { path: 'new-call.ts', content: '' });
+  const heads: string[] = [];
+  const update = CardSources.prototype.updateDisplay;
+  t.mock.method(CardSources.prototype, 'updateDisplay', function(this: CardSources<object>, owner, input, report) {
+    return update.call(this, owner, input, report && (value => {
+      heads.push(input.reader.call.id);
+      report(value);
+    }));
+  } as typeof update);
+  node.updateResult({ content: [], details: { patch: '@@ -0,0 +1 @@\n+ONE\n' } }, false);
+  node.setExpanded(true);
+  assert.match(textRows(f.render(node)), /← Created new-call\.ts/u);
+  node.setExpanded(false);
+  const before = heads.length;
+  Object.defineProperty(node, 'toolCallId', { value: 'new-id' });
+  node.setExpanded(false);
+  assert.match(textRows(f.render(node)), /← Created new-call\.ts/u);
+  assert.deepEqual(heads.slice(before), ['new-id'], 'only the new call can publish preparation, even with the same argument/result objects');
+});
+
 test('prepared host: syntax-less SDK first frame consumes common display prepared before rendering', () => {
   const ui = new UI();
   const tool = new ToolExecutionComponent('bash', 'prepared-first', { command: 'first\n\t界 é' }, undefined, undefined, ui, '/tmp');

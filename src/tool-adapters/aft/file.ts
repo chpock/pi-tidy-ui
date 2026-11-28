@@ -1,5 +1,5 @@
-import { filePreviewSource, prepareFileCard } from '../../cards/file-input.ts';
-import type { FileCardInput, PreparedFileCard } from '../../cards/file-model.ts';
+import { classifySavedFileChange, filePreviewSource, prepareFileCard } from '../../cards/file-input.ts';
+import type { FileCardInput, FileChangeClass, PreparedFileCard } from '../../cards/file-model.ts';
 import type { FilePreviewMode } from '../../cards/file-preview-mode.ts';
 import type { FileDiagnostic, FileToolReader, ToolAdapter, ToolCallSnapshot } from '../contracts.ts';
 import { pendingPiFile, piFileReader } from '../pi/file.ts';
@@ -58,20 +58,20 @@ function diffFormat(value: unknown, mode: FilePreviewMode): 'unified' | 'numbere
   const text = mode === 'preview' ? filePreviewSource(value).text : value;
   return /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/mu.test(text) ? 'unified' : 'numbered';
 }
-function prepare(base: FileToolReader, call: ToolCallSnapshot, kind: FileKind, mode: FilePreviewMode, logicalOnly: boolean) {
-  if (kind === 'read' || !call.hasResult || call.partial || call.resultFailed) return base.prepareFile(mode, logicalOnly);
-  const path = base.path();
-  if (!path) return undefined;
+function savedFile(call: ToolCallSnapshot, kind: 'edit' | 'write', path: string, mode: FilePreviewMode,
+  resolveFormat: (value: unknown, mode: FilePreviewMode) => NonNullable<FileCardInput['saved']>['format'], knownChange?: FileChangeClass): FileCardInput {
   const data = fileData(call), selected = selectedSource(call, kind);
   let saved: FileCardInput['saved'];
   if (selected.type === 'patch') saved = { format: 'unified', value: selected.value };
-  else if (selected.type === 'diff') saved = { format: diffFormat(selected.value, mode), value: selected.value };
-  return prepareFileCard({ kind, path, complete: call.hasResult && !call.partial, failed: call.resultFailed, viewMode: mode,
-    content: call.args.content, saved, truncated: data.truncated === true, noOp: data.noOp === true,
-    note: note(call, kind, { label: 'Wrote', mode: 'code' }) }, logicalOnly);
+  else if (selected.type === 'diff' && (mode === 'preview' || knownChange !== 'Wrote')) saved = { format: resolveFormat(selected.value, mode), value: selected.value };
+  return { kind, path, complete: call.hasResult && !call.partial, failed: call.resultFailed, viewMode: mode,
+    content: call.args.content, saved, knownChange, truncated: data.truncated === true, noOp: data.noOp === true,
+    note: note(call, kind, { label: 'Wrote', mode: 'code' }) };
 }
 export function aftFileReader(call: ToolCallSnapshot, kind: FileKind): FileToolReader {
   const base = piFileReader(call, kind);
+  const formats: Partial<Record<FilePreviewMode, ReturnType<typeof diffFormat>>> = {};
+  const resolveFormat: typeof diffFormat = (value, mode) => formats[mode] ??= diffFormat(value, mode);
   return {
     ...base,
     source: mode => source(base, call, kind, mode),
@@ -95,7 +95,18 @@ export function aftFileReader(call: ToolCallSnapshot, kind: FileKind): FileToolR
       }
       return base.estimateBytes(context) + units * 6 + rows * 1024;
     },
-    prepareFile: (mode, logicalOnly = false) => prepare(base, call, kind, mode, logicalOnly),
+    changeIdentity: kind === 'read' ? undefined : () => {
+      const selected = selectedSource(call, kind), hasContent = kind === 'write' && typeof call.args.content === 'string';
+      if (selected.type === 'content') return [kind, 'content', fileData(call).truncated === true, hasContent];
+      const value = selected.type === 'newText' ? undefined : typeof selected.value === 'string' ? selected.value : null;
+      return [kind, selected.type, value, hasContent];
+    },
+    classifyChange: kind === 'read' ? undefined : () => classifySavedFileChange(savedFile(call, kind, base.path()!, 'full', () => 'detect')),
+    prepareFile(mode, logicalOnly = false, knownChange) {
+      if (kind === 'read' || !call.hasResult || call.partial || call.resultFailed) return base.prepareFile(mode, logicalOnly);
+      const path = base.path();
+      return path ? prepareFileCard(savedFile(call, kind, path, mode, resolveFormat, knownChange), logicalOnly) : undefined;
+    },
     pendingDetail: mode => !call.partial && call.resultFailed ? base.pendingDetail(mode)
       : pendingPiFile(call, kind, mode, kind === 'edit' && Array.isArray(call.args.edits) ? call.args.edits : undefined),
   };

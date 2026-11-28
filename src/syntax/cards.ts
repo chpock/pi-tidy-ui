@@ -1,7 +1,7 @@
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import { diagnose, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
 import { cardSourceKey as sourceKey } from '../cards/preparation.ts';
-import type { PreparedFileCard } from '../cards/file-model.ts';
+import type { FileChangeClass, PreparedFileCard } from '../cards/file-model.ts';
 import { fileSources } from '../cards/file-sources.ts';
 import { CONTROLLER_LIMITS } from '../highlighting/controller-limits.ts';
 import type { CardSourcePort, GroupDisplayBasis, GroupDisplayMember } from '../highlighting/source-ports.ts';
@@ -131,7 +131,7 @@ export class CardSources<Owner extends object> {
     return ticket;
   }
   /** Explicit cold lifecycle boundary. Never call from render. */
-  updateDisplay(owner: Owner, input: CardDisplayInput): boolean {
+  updateDisplay(owner: Owner, input: CardDisplayInput, observeChange?: (value: FileChangeClass | null) => void): boolean {
     if (this.disposed || !this.client.cardSource.active) return false;
     let state = this.states.get(owner);
     if (!state) {
@@ -141,8 +141,8 @@ export class CardSources<Owner extends object> {
     const ticket = this.register(owner, state);
     if (!ticket?.work) return false;
     const entry = displayEntry(state, input);
-    if (entry.refresh) return this.refreshUnchangedDisplay(owner, state, ticket, input, entry.refreshInput);
-    return this.replaceDisplay(owner, state, ticket, input, entry);
+    if (entry.refresh && !observeChange) return this.refreshUnchangedDisplay(owner, state, ticket, input, entry.refreshInput);
+    return this.replaceDisplay(owner, state, ticket, input, entry, observeChange);
   }
 
   private refreshUnchangedDisplay(owner: Owner, state: State, ticket: RecordTicket, input: CardDisplayInput, replaceInput: boolean): boolean {
@@ -156,7 +156,8 @@ export class CardSources<Owner extends object> {
     return true;
   }
 
-  private replaceDisplay(owner: Owner, state: State, ticket: RecordTicket, input: CardDisplayInput, entry: DisplayEntry): boolean {
+  private replaceDisplay(owner: Owner, state: State, ticket: RecordTicket, input: CardDisplayInput, entry: DisplayEntry,
+    observeChange?: (value: FileChangeClass | null) => void): boolean {
     const funding = this.client.cardSource.geometryFunding(ticket.work);
     if (!funding) return this.refuseDisplay(owner, state, ticket, input, entry);
     const reuse = reuseFileDescriptor(state, input, entry);
@@ -165,9 +166,13 @@ export class CardSources<Owner extends object> {
     const mutation = ++state.mutation;
     const charge = reuse ? undefined : fund(funding, inputBytes(input));
     if (!charge && !reuse) return this.refuseDisplay(owner, state, ticket, input, entry);
-    const operation = beginDisplayBuild(funding, ticket.id, () => ++state.geometry);
+    let change: FileChangeClass | null | undefined;
+    const operation = beginDisplayBuild(funding, ticket.id, () => ++state.geometry,
+      observeChange ? value => { change = value; } : undefined);
     try {
       const built = operation.build(input, state, entry);
+      if (change !== undefined && this.client.cardSource.active && this.owned(owner, state, ticket) && state.mutation === mutation)
+        observeChange?.(change);
       if (!built) {
         if (this.owned(owner, state, ticket) && state.mutation === mutation) this.refuseDisplay(owner, state, ticket, input, entry);
         return false;
@@ -649,7 +654,6 @@ export class CardSources<Owner extends object> {
     return visitPreparedCard(state,
       () => !this.disposed && this.states.get(owner) === state && state.mutation === mutation && state.paint === paint, consume);
   }
-  // Accepted metadata is knowable before palette paint publication, which may be denied independently.
   filePreparationOutcome(owner: Owner): 'supported' | 'unsupported' | undefined {
     const state = this.states.get(owner);
     if (!state?.ticket?.descriptorCharge || state.input?.kind !== 'file' || state.display?.kind !== 'file') return;

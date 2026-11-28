@@ -31,11 +31,12 @@ export class FileDetailPresenter<Owner extends object> {
   layout(owner: Owner, width: number): ToolPresentationLayout | undefined {
     const { ports } = this;
     const call = ports.producer.capture(owner);
-    const kind = ports.producer.kindFrom(call);
+    const kind = ports.producer.kind(owner);
     if (kind === undefined || kind === 'bash') return;
     const theme = ports.theme(), padding = ports.padding(), mode = ports.mode(owner) ?? 'preview';
     const cwd = ports.cwd(owner);
-    const signature = [kind, width, padding, theme, theme.fg, call.args, call.result, call.expanded, call.partial, cwd, mode];
+    const knownChange = ports.producer.fileChange(owner);
+    const signature = [kind, width, padding, theme, theme.fg, call.args, call.result, call.expanded, call.partial, cwd, mode, knownChange];
 
     const reusable = ports.sessions.reusableLayout(owner, signature);
     if (reusable) return reusable;
@@ -57,9 +58,9 @@ export class FileDetailPresenter<Owner extends object> {
     const { ports } = this;
     const detail = mode === 'full' ? ports.details.peek(owner, mode) : undefined;
       if (mode === 'full' && !call.partial && call.resultFailed)
-        return ports.summaries.fileError(kind, ports.producer.readerFrom(call)?.path(), width, theme, padding, cwd, detail);
+        return ports.summaries.fileError(kind, ports.producer.reader(owner)?.path(), width, theme, padding, cwd, detail);
 
-      const summary = ports.summaries.rows(owner, width, theme, padding, kind === 'read' && mode === 'full' ? 'Read' : undefined, cwd);
+      const summary = ports.summaries.rows(owner, width, theme, padding, kind === 'read' && mode === 'full' ? 'Read' : ports.producer.fileChange(owner) ?? undefined, cwd);
       const state = ports.sessions.syntax(owner);
       const paintRetry = state?.paintRetry === true;
       const rows = [...summary.rows];

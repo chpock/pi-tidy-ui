@@ -18,8 +18,8 @@ const workDelta = (before, after) => ({
 });
 function assertFollowPiPreview(dump) {
   const text = body(dump).filter(({ name }) => name === 'write' || name === 'edit').flatMap(({ lines }) => lines).join('\n');
-  assert.match(text, /← Write follow-pi\.md/u); assert.match(text, /← Edit follow-pi\.md/u);
-  assert.doesNotMatch(text, /← Wrote follow-pi\.md|← Edited follow-pi\.md/u);
+  assert.match(text, /← Wrote follow-pi\.md/u);
+  assert.match(text, /← Edited follow-pi\.md/u);
   assert.match(text, /Preview is limited to a bounded source prefix/u); assert.match(text, /Click to expand/u);
   assert.doesNotMatch(text, /LIST_HEADING/u);
 }

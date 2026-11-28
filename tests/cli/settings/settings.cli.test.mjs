@@ -12,17 +12,14 @@ import { referenceCell, allBashCards, traffic, sgrAt } from '../../fixtures/main
 const fileNames = new Set(['write', 'edit']);
 const nonFileTools = dump => dump.tools.filter(tool => !fileNames.has(tool.name));
 const toolDataIdentity = dump => dump.tools.map(({ args, content, details, isError }) => ({ args, content, details, isError }));
-const screenHas = (terminal, text) => terminal.screen().some(row => plain(row).includes(text));
 async function toggleFileCard(terminal, dump, name) {
   const card = byName(dump, name)[0], rows = card.lines.filter(row => row !== '').map(plain);
   const y = dump.screen.findIndex((_, start) => rows.every((row, offset) => dump.screen[start + offset] !== undefined && plain(dump.screen[start + offset]) === row));
   assert.ok(y >= 0, `complete ${name} panel is physically available as a public mouse target`);
-  const headings = name === 'write' ? ['Wrote', 'Write'] : ['Edited', 'Edit'];
-  const heading = headings.find(value => dump.screen.some(row => plain(row).includes(`← ${value} `)));
-  assert.ok(heading, `visible ${name} panel heading is a click target`);
-  const titleRow = dump.screen.findIndex(row => plain(row).includes(`← ${heading} `));
-  const column = plain(dump.screen[titleRow]).indexOf(heading) + 1;
-  await sgrAt(terminal, column, titleRow);
+  const heading = name === 'write' ? '← Wrote' : '← Edited';
+  const title = rows.findIndex(row => row.includes(heading));
+  assert.ok(title >= 0, `visible ${name} panel heading is a click target`);
+  await sgrAt(terminal, rows[title].indexOf(heading) + 2, y + title);
 }
 function fileContentRows(card) {
   const rows = card.lines.map(row => {
@@ -39,11 +36,11 @@ function fileContentRows(card) {
   assert.ok(content.length > 0, 'full file panel includes at least one physical source/diff row');
   return content;
 }
-function assertPreviewLabels(dump) {
-  assert.match(byName(dump, 'write')[0].lines.map(plain).join('\n'), /← Write /u);
-  assert.doesNotMatch(byName(dump, 'write')[0].lines.map(plain).join('\n'), /← Wrote /u);
-  assert.match(byName(dump, 'edit')[0].lines.map(plain).join('\n'), /← Edit /u);
-  assert.doesNotMatch(byName(dump, 'edit')[0].lines.map(plain).join('\n'), /← Edited /u);
+function assertResultTitles(dump) {
+  for (const [name, heading] of [['write', 'Wrote'], ['edit', 'Edited']]) {
+    const text = byName(dump, name)[0].lines.map(plain).join('\n');
+    assert.match(text, new RegExp(`← ${heading}\\b`, 'u'), `${name}: the validated result title does not depend on the view`);
+  }
 }
 
 test('Output padding settings update summaries and all transcript cards live with native and replay controls', { timeout: 180000 }, async () => {
@@ -122,49 +119,38 @@ test('Output padding settings update summaries and all transcript cards live wit
           assert.deepEqual(toolDataIdentity(native), toolDataIdentity(first));
           await live.appearance(true);
           const restored = await check(live, padding, width, `${mode}-${cycle}-${width}-on`);
-          assertPreviewLabels(restored);
+           assertResultTitles(restored);
           assert.deepEqual(nonFileTools(restored).map(tool => tool.lines), nonFileTools(dump).map(tool => tool.lines), 'appearance re-enable rebuilds unrelated transcript tools unchanged');
           let selected = restored;
           if (mode === 'fullscreen') {
             const name = padding === 1 && width === 100 ? 'edit' : 'write';
-            const filePath = byName(selected, name)[0].args.path, fullHeading = name === 'write' ? 'Wrote' : 'Edited';
-            await toggleFileCard(live, selected, name);
-            await until(() => live.screen().some(row => row.includes(`← ${fullHeading} ${filePath}`)), `fullscreen click expands ${name} after appearance re-enable`);
+             await toggleFileCard(live, selected, name);
             selected = await check(live, padding, width, `${mode}-${cycle}-${width}-selected-${name}`);
             assert.deepEqual(fileContentRows(byName(selected, name)[0]), fileContentRows(byName(first, name)[0]), `mouse-selected full ${name} content survives appearance rebuild and output padding`);
             fullPanels.set(`${padding}-${width}`, new Map([[name, byName(selected, name)[0].lines]]));
             await toggleFileCard(live, selected, name);
-            const previewHeading = name === 'write' ? 'Write' : 'Edit';
-            await until(() => live.screen().some(row => row.includes(`← ${previewHeading} ${filePath}`)), `fullscreen click restores ${name} preview`);
             selected = await check(live, padding, width, `${mode}-${cycle}-${width}-collapsed-${name}`);
           } else {
             live.send('\x0f'); await live.settle();
-            const paths = Object.fromEntries(['write', 'edit'].map(name => [name, byName(restored, name)[0].args.path]));
-            const full = () => screenHas(live, '← Wrote') && screenHas(live, '← Edited');
-            await until(full, 'regular mode uses Pi Ctrl+O to expand both file cards, including wrapped titles');
             selected = await check(live, padding, width, `${mode}-${cycle}-${width}-all-full`);
             assert.ok(['write', 'edit'].every(name => byName(selected, name)[0].expanded), 'Pi reports both tools expanded');
             fullPanels.set(`${padding}-${width}`, new Map(['write', 'edit'].map(name => [name, byName(selected, name)[0].lines])));
             for (const name of ['write', 'edit'])
               assert.deepEqual(fileContentRows(byName(selected, name)[0]), fileContentRows(byName(first, name)[0]), `Ctrl+O full ${name} content survives appearance rebuild and output padding`);
             live.send('\x0f'); await live.settle();
-            const preview = () => screenHas(live, '← Write') && screenHas(live, '← Edit ');
-            await until(preview, 'regular mode Ctrl+O restores both saved file previews');
             selected = await check(live, padding, width, `${mode}-${cycle}-${width}-collapsed-all`);
           }
-          assertPreviewLabels(selected);
+           assertResultTitles(selected);
         }
       }
       await live.resize(100, 220);
       const current = saved.get('0-100');
       await live.command('/reload'); await live.event('start', 2);
       const reloaded = await check(live, 0, 100, `${mode}-reload`);
-      assertPreviewLabels(reloaded);
+       assertResultTitles(reloaded);
       assert.deepEqual(nonFileTools(reloaded).map(tool => tool.lines), nonFileTools(current).map(tool => tool.lines), 'reload restores non-file cards without changing presentation');
       if (mode === 'fullscreen') {
         await toggleFileCard(live, reloaded, 'edit');
-        const editPath = byName(reloaded, 'edit')[0].args.path;
-        await until(() => live.screen().some(row => row.includes(`← Edited ${editPath}`)), 'full edit card after zero-margin mouse selection');
         const expanded = await check(live, 0, 100, `pointer-output-${mode}-click-zero`);
         assert.match(byName(expanded, 'edit')[0].lines.map(plain).join('\n'), /← Edited /u, 'zero-margin stripe is a real panel click target');
         assert.deepEqual(byName(expanded, 'edit')[0].lines, byName(first, 'edit')[0].lines, 'the selected full edit retains its complete physical panel');
@@ -187,32 +173,24 @@ test('Output padding settings update summaries and all transcript cards live wit
           assert.deepEqual(off.users.map(user => user.lines), control.users.map(user => user.lines));
           await replay.appearance(true);
           const restored = await check(replay, padding, width, `replay-${mode}-${padding}-${width}-restored-preview`);
-          assertPreviewLabels(restored);
+           assertResultTitles(restored);
           assert.deepEqual(nonFileTools(restored).map(tool => tool.lines), nonFileTools(expected).map(tool => tool.lines));
-          const paths = Object.fromEntries(['write', 'edit'].map(name => [name, byName(restored, name)[0].args.path]));
           if (mode === 'fullscreen') {
             const name = padding === 1 && width === 100 ? 'edit' : 'write';
             await toggleFileCard(replay, restored, name);
-            const heading = name === 'write' ? 'Wrote' : 'Edited';
-            await until(() => replay.screen().some(row => row.includes(`← ${heading} ${paths[name]}`)), `fullscreen replay click expands ${name}`);
             const selected = await check(replay, padding, width, `replay-${mode}-${padding}-${width}-selected-${name}`);
             assert.deepEqual(byName(selected, name)[0].lines, fullPanels.get(`${padding}-${width}`).get(name), `fullscreen replay preserves full physical ${name} rows`);
             await toggleFileCard(replay, selected, name);
-            const previewHeading = name === 'write' ? 'Write' : 'Edit';
-            await until(() => replay.screen().some(row => row.includes(`← ${previewHeading} ${paths[name]}`)), `fullscreen replay restores ${name} preview`);
           } else {
             replay.send('\x0f'); await replay.settle();
-            const full = () => screenHas(replay, '← Wrote') && screenHas(replay, '← Edited');
-            await until(full, 'regular replay uses Pi Ctrl+O to expand both saved file cards');
-            const selected = await replay.capture(`replay-${mode}-${padding}-${width}-all-full`);
+             const selected = await replay.capture(`replay-${mode}-${padding}-${width}-all-full`);
+             assert.ok(['write', 'edit'].every(name => byName(selected, name)[0].expanded), 'Pi reports both restored tools expanded');
             for (const name of ['write', 'edit'])
               assert.deepEqual(byName(selected, name)[0].lines, fullPanels.get(`${padding}-${width}`).get(name), `regular replay preserves full physical ${name} rows`);
             replay.send('\x0f'); await replay.settle();
-            const preview = () => screenHas(replay, '← Write') && screenHas(replay, '← Edit ');
-            await until(preview, 'regular replay Ctrl+O restores both saved file previews');
           }
           const collapsed = await check(replay, padding, width, `replay-${mode}-${padding}-${width}-collapsed`);
-          assertPreviewLabels(collapsed);
+           assertResultTitles(collapsed);
           assert.deepEqual(nonFileTools(collapsed).map(tool => tool.lines), nonFileTools(expected).map(tool => tool.lines));
         }
       }
@@ -239,7 +217,7 @@ test('Output padding project override stays consistent after native user padding
     try {
       await live.ready(); await live.resize(100, 220); await live.run('suite');
       const before = await live.capture(`pointer-project-before-${mode}`), activity = traffic(live, 7), bytes = readFileSync(before.session);
-      assert.ok(screenHas(live, '← Wrote') && screenHas(live, '← Edited'), 'attached successful file calls are full in the live turn');
+       assertResultTitles(before);
       const filePresentation = ['write', 'edit'].map(name => byName(before, name)[0].lines);
       const fileArgsComplete = dump => ['write', 'edit'].map(name => byName(dump, name)[0].argsComplete);
       assert.deepEqual(fileArgsComplete(before), [true, true], 'the before capture observes actual completed live tool owners');
@@ -259,18 +237,15 @@ test('Output padding project override stays consistent after native user padding
       const reconstructedOwner = afterArgsComplete.every(complete => complete === false);
       assert.ok(retainedOwner || reconstructedOwner, 'native lifecycle diagnostics distinguish retained live owners from reconstructed saved calls');
       if (reconstructedOwner) {
-        assertPreviewLabels(after);
-        if (mode === 'fullscreen') {
-          const writePath = byName(after, 'write')[0].args.path;
-          await toggleFileCard(live, after, 'write');
-          await until(() => live.screen().some(row => row.includes(`← Wrote ${writePath}`)), 'fullscreen restores the re-created live write to full view');
+         assertResultTitles(after);
+         if (mode === 'fullscreen') {
+           await toggleFileCard(live, after, 'write');
           presentation = await live.capture(`pointer-project-full-write-${mode}`);
           assert.deepEqual(byName(presentation, 'write')[0].lines, filePresentation[0], 'full write rows and styling survive Pi reconstruction');
         } else {
           live.send('\x0f'); await live.settle();
-          const allFull = () => screenHas(live, '← Wrote') && screenHas(live, '← Edited');
-          await until(allFull, 'regular Ctrl+O restores both re-created live file cards to full view');
-          presentation = await live.capture(`pointer-project-full-${mode}`);
+           presentation = await live.capture(`pointer-project-full-${mode}`);
+           assert.ok(['write', 'edit'].every(name => byName(presentation, name)[0].expanded), 'Pi reports both re-created tools expanded');
           for (const name of ['write', 'edit'])
             assert.deepEqual(byName(presentation, name)[0].lines, filePresentation[name === 'write' ? 0 : 1], `full ${name} rows and styling survive Pi reconstruction`);
         }

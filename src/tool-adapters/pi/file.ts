@@ -1,6 +1,6 @@
 import { getLanguageFromPath } from '@earendil-works/pi-coding-agent';
-import { FILE_PREVIEW_MAX_ROWS, FILE_PREVIEW_MAX_UNITS, filePreviewSource, filePreviewText, prepareFileCard, sourceRows } from '../../cards/file-input.ts';
-import type { FileCardInput } from '../../cards/file-model.ts';
+import { classifySavedFileChange, FILE_PREVIEW_MAX_ROWS, FILE_PREVIEW_MAX_UNITS, filePreviewSource, filePreviewText, prepareFileCard, sourceRows } from '../../cards/file-input.ts';
+import type { FileCardInput, FileChangeClass } from '../../cards/file-model.ts';
 import type { FilePreviewMode } from '../../cards/file-preview-mode.ts';
 import type { FileToolReader, PendingFileDetail, ReaderEstimateContext, ToolCallSnapshot } from '../contracts.ts';
 import { createFileReader, type FileReaderBehavior } from '../shared/file-reader.ts';
@@ -21,8 +21,8 @@ function readImageNotice(call: ToolCallSnapshot): string | undefined {
   const model = fileData(call).imageUnsupportedByModel;
   return typeof model === 'string' && model.trim() ? imagePlaceholderNotice : undefined;
 }
-function source(call: ToolCallSnapshot, kind: FileKind, mode: FilePreviewMode): readonly unknown[] {
-  const args = call.args, path = pathOf(args);
+function source(call: ToolCallSnapshot, kind: FileKind, mode: FilePreviewMode, path: string | undefined): readonly unknown[] {
+  const args = call.args;
   if (kind === 'read') {
     const key = mode === 'full' ? ['saved-text', ...savedParts(call), args.offset] : ['saved-result', weakIdentity(call.result)];
     return [kind, mode, path, ...key, call.partial, call.resultFailed];
@@ -58,21 +58,21 @@ function estimateBytes(call: ToolCallSnapshot, context: ReaderEstimateContext, k
   if (typeof diff === 'string') units += size(context.mode === 'preview' ? filePreviewSource(diff).text : diff);
   return 4096 + units * 6 + rows * 1024;
 }
-function prepare(call: ToolCallSnapshot, kind: FileKind, mode: FilePreviewMode, logicalOnly: boolean) {
+function savedFile(call: ToolCallSnapshot, kind: 'edit' | 'write', path: string, viewMode: FilePreviewMode, knownChange?: FileChangeClass): FileCardInput {
+  const diff = kind === 'edit' ? fileData(call).diff : undefined;
+  return { kind, path, complete: call.hasResult && !call.partial, failed: call.resultFailed, viewMode,
+    content: call.args.content, knownChange, saved: diff === undefined ? undefined : { format: 'numbered', value: diff } };
+}
+function prepare(call: ToolCallSnapshot, kind: FileKind, mode: FilePreviewMode, logicalOnly: boolean, path: string | undefined, knownChange?: FileChangeClass) {
   if (!call.hasResult || call.partial) return undefined;
-  const path = pathOf(call.args);
   if (!path) return undefined;
   const common = { kind, path, complete: call.hasResult && !call.partial, failed: call.resultFailed, viewMode: mode };
   if (call.resultFailed && kind !== 'read') return kind === 'edit' ? prepareFileCard(common, logicalOnly) : undefined;
-  let input: FileCardInput;
-  if (kind === 'read') {
-    const rawOffset = call.args.offset;
-    const offset = typeof rawOffset === 'number' && Number.isSafeInteger(rawOffset) && rawOffset > 0 ? rawOffset : 1;
-    const readRows = mode === 'preview' ? [] : Array.from(sourceRows(savedParts(call).join('\n')), (text, index) => ({ text, line: offset + index }));
-    input = { ...common, readRows };
-  } else input = { ...common, content: call.args.content, saved: kind === 'edit' && fileData(call).diff !== undefined
-    ? { format: 'numbered', value: fileData(call).diff } : undefined };
-  return prepareFileCard(input, logicalOnly);
+  if (kind !== 'read') return prepareFileCard(savedFile(call, kind, path, mode, knownChange), logicalOnly);
+  const rawOffset = call.args.offset;
+  const offset = typeof rawOffset === 'number' && Number.isSafeInteger(rawOffset) && rawOffset > 0 ? rawOffset : 1;
+  const readRows = mode === 'preview' ? [] : Array.from(sourceRows(savedParts(call).join('\n')), (text, index) => ({ text, line: offset + index }));
+  return prepareFileCard({ ...common, readRows }, logicalOnly);
 }
 
 /** The aggregate prefix allowance covers all borrowed parts/entries, not each part separately. */
@@ -139,7 +139,7 @@ function behavior(kind: FileKind): FileReaderBehavior {
   return {
     kind,
     path: call => pathOf(call.args),
-    source: (call, mode) => source(call, kind, mode),
+    source: (call, mode, path) => source(call, kind, mode, path),
     diagnostics: (_call, mode) => mode === 'preview' ? false : [],
     diagnosticText: () => [],
     note: kind === 'read' ? readImageNotice : () => undefined,
@@ -148,10 +148,10 @@ function behavior(kind: FileKind): FileReaderBehavior {
       const identity = [cwd, weakIdentity(call.result), call.partial];
       return kind === 'read' ? [...identity, readImageNotice(call)] : identity;
     },
-    language: call => { const path = pathOf(call.args); return path ? getLanguageFromPath(path) : undefined; },
+    language: path => path ? getLanguageFromPath(path) : undefined,
     summaryArgs: call => (kind === 'write' || kind === 'edit') && typeof call.args.path === 'string' && call.args.path.length ? { path: call.args.path } : call.args,
     estimateBytes: (call, context) => estimateBytes(call, context, kind),
-    prepareFile: (call, mode, logicalOnly) => prepare(call, kind, mode, logicalOnly),
+    prepareFile: (call, mode, logicalOnly, path, knownChange) => prepare(call, kind, mode, logicalOnly, path, knownChange),
     pendingDetail: (call, mode) => pendingPiFile(call, kind, mode),
   };
 }
@@ -159,5 +159,10 @@ const behaviors = { read: behavior('read'), write: behavior('write'), edit: beha
 export function piFileReader(call: ToolCallSnapshot, kind: FileKind): FileToolReader {
   const reader = createFileReader(call, behaviors[kind]);
   if (kind === 'read') reader.compactNotice = () => readImageNotice(call);
+  else {
+    reader.changeIdentity = () => kind === 'edit'
+      ? [kind, 'numbered', fileData(call).diff] : [kind, 'content', false, typeof call.args.content === 'string'];
+    reader.classifyChange = () => classifySavedFileChange(savedFile(call, kind, reader.path()!, 'full'));
+  }
   return reader;
 }

@@ -1,3 +1,5 @@
+export type FileChangeClass = 'Edited' | 'Created' | 'Replaced' | 'Wrote';
+
 export type FileCardInput = {
   readonly kind: 'read' | 'write' | 'edit';
   readonly path: string;
@@ -5,16 +7,17 @@ export type FileCardInput = {
   readonly failed: boolean;
   readonly viewMode: 'full' | 'preview';
   readonly content?: unknown;
-  readonly saved?: { readonly format: 'numbered' | 'unified'; readonly value: unknown };
+  readonly saved?: { readonly format: 'numbered' | 'unified' | 'detect'; readonly value: unknown };
   readonly truncated?: boolean;
   readonly noOp?: boolean;
   readonly note?: string;
+  readonly knownChange?: FileChangeClass;
   readonly readRows?: readonly { readonly text: string; readonly line?: number }[];
 };
 export type FileSide = 'old' | 'next';
 export type FileDisplayLine = { kind: ' ' | '+' | '-'; text: string; old?: number; next?: number; hunk?: number } | { kind: 'gap' };
 export type FileLogicalLine = (Exclude<FileDisplayLine, { kind: 'gap' }> & { logical: string; languageHint?: string }) | { kind: 'gap' };
-export type FileView = { label: 'Edited' | 'Created' | 'Replaced' | 'Wrote' | 'Edit' | 'Write' | 'Read'; mode: 'inline' | 'diff' | 'code';
+export type FileView = { label: FileChangeClass | 'Edit' | 'Write' | 'Read'; mode: 'inline' | 'diff' | 'code';
   lines: readonly FileDisplayLine[]; note?: string; preview?: boolean; omitted?: boolean };
 export type SourceFileView = Omit<FileView, 'lines'> & { lines: FileLogicalLine[] };
 export interface FileSource {

@@ -70,7 +70,7 @@ const renderingModules = ['src/rendering/card-values.ts', 'src/rendering/card-st
   'src/rendering/measured-rows.ts', 'src/rendering/flat-paint.ts', 'src/rendering/card-layout.ts',
   'src/rendering/scene-model.ts', 'src/rendering/bash-scene.ts', 'src/rendering/file-scene.ts'];
 const presentationModules = [
-  'src/presentation/cache-owner.ts', 'src/presentation/card-preparation.ts', 'src/presentation/file-details.ts', 'src/presentation/file-preview-state.ts',
+  'src/presentation/cache-owner.ts', 'src/presentation/card-preparation.ts', 'src/presentation/file-details.ts', 'src/presentation/tool-call-state.ts',
   'src/presentation/file-detail-presenter.ts', 'src/presentation/prepared-layout-presenter.ts',
   'src/presentation/queued-presenter.ts', 'src/presentation/tool-intents.ts', 'src/presentation/tool-policy.ts',
   'src/presentation/tool-producers.ts', 'src/presentation/tool-routing-presenter.ts', 'src/presentation/tool-sessions.ts', 'src/presentation/tool-summary-presenter.ts',
@@ -890,7 +890,7 @@ function assertPresentationDependency(edge) {
     && edge.target === 'src/diagnostics.ts';
   const producerInterpretation = edge.source === 'src/presentation/tool-producers.ts'
     && ['src/tool-adapters/registry.ts', 'src/tool-adapters/contracts.ts'].includes(edge.target);
-  const presentationAdapterContracts = ['src/presentation/tool-policy.ts', 'src/presentation/tool-sessions.ts'].includes(edge.source)
+  const presentationAdapterContracts = ['src/presentation/tool-call-state.ts', 'src/presentation/tool-policy.ts', 'src/presentation/tool-sessions.ts'].includes(edge.source)
     && edge.target === 'src/tool-adapters/contracts.ts' && edge.kind === 'type-only';
   const allowed = isPresentationModule(edge.target) || edge.target.startsWith('src/rendering/')
     || edge.target.startsWith('src/resources/') || edge.target.startsWith('src/appearance/')

@@ -97,16 +97,16 @@ test("pending, partial, success and errors are distinguishable without full outp
   const tool = new Tool();
   const { controller } = setup([tool]);
   try {
-    tool.result = undefined; tool.isPartial = true;
+    tool.updateResult(undefined, true);
     assert.ok(spinnerFrames.includes(plain(tool.render(80)[0]!)[1]!));
     assert.doesNotMatch(tool.render(80).join(""), /…/u);
-    tool.result = { content: [{ type: "text", text: "PARTIAL_OUTPUT" }] };
+    tool.updateResult({ content: [{ type: "text", text: "PARTIAL_OUTPUT" }] }, true);
     assert.ok(spinnerFrames.includes(plain(tool.render(80)[0]!)[1]!));
     assert.doesNotMatch(tool.render(80).join(""), /…/u);
-    tool.isPartial = false;
+    tool.updateResult(tool.result, false);
     assert.equal(plain(tool.render(80).at(-1)!), " → read a.txt");
     assert.doesNotMatch(tool.render(80).join(""), /PARTIAL_OUTPUT/);
-    tool.result = { isError: true, content: [{ type: "text", text: "ENOENT: missing file\nstack details" }] };
+    tool.updateResult({ isError: true, content: [{ type: "text", text: "ENOENT: missing file\nstack details" }] });
     assert.equal(plain(tool.render(80).at(-1)!), " → read a.txt");
     assert.doesNotMatch(tool.render(80).join(""), /ENOENT|stack details|✓|✗/u);
   } finally { controller.restore(); }
@@ -170,7 +170,7 @@ test("mouse dispatch uses rendered summary heights and ignores gaps, pending cal
     assert.match(expandedRead, /Read/u, 'read expansion uses the owned Read heading');
     assert.doesNotMatch(expandedRead, /NATIVE read/u, 'read text expansion does not restore the stock renderer');
     second.handleMouse(mouse(1)); assert.equal(second.expanded, false);
-    first.isPartial = true;
+    first.updateResult(first.result, true);
     assert.equal(first.handleMouse(mouse(1)), undefined);
     assert.equal(first.handleMouse({ ...mouse(1), type: "wheel", wheelDelta: -1 }), undefined);
   } finally { controller.restore(); }
@@ -461,7 +461,7 @@ test("colored word-boundary wraps never add padding or blank clickable content r
     assert.deepEqual(tool.render(21).map(plain), [' → read', '   abcdefghijklm', '   [limit=1]']);
     // The original colored-boundary geometry now occurs one column wider.
     assert.deepEqual(tool.render(22).map(plain), [' → read abcdefghijklm', '   [limit=1]']);
-    tool.args = { path: "abcdefghijklm", query: "x".repeat(40) };
+    tool.updateArgs({ path: "abcdefghijklm", query: "x".repeat(40) });
     const rows = tool.render(21).map(plain);
     assert.ok(rows.length > 2);
     assert.ok(rows.slice(1).every((row) => row.startsWith("   ") && row[3] !== " " && row.trim()));
@@ -679,10 +679,9 @@ test("compact summaries reserve one right column before wrapping at every usable
   try {
     const args = structuredClone(tool.args);
     for (const state of ["pending", "partial", "success", "error"]) {
-      tool.isPartial = state === "partial";
-      tool.result = state === "pending" ? undefined : {
+      tool.updateResult(state === "pending" ? undefined : {
         isError: state === "error", content: [{ type: "text", text: state === "error" ? "Failure 文件" : "RAW_RESULT" }],
-      };
+      }, state === "partial");
       const glyph = state === "pending" || state === "partial" ? "⠋" : "⚙";
       const result = structuredClone(tool.result);
       for (let width = 0; width <= 90; width++) {
@@ -702,7 +701,7 @@ test("compact summaries reserve one right column before wrapping at every usable
       assert.deepEqual(tool.args, args);
       assert.deepEqual(tool.result, result);
     }
-    tool.isPartial = false; tool.result = { content: [] };
+    tool.updateResult({ content: [] });
     assert.equal(next.render(30)[0], "", "a narrowed multiline predecessor still owns one following separator");
     assert.equal(next.render(1000).length, 1, "resize back removes the adaptive separator");
   } finally { controller.restore(); }

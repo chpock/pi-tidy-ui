@@ -13,6 +13,7 @@ import { highlightCode } from '@earendil-works/pi-coding-agent';
 import { getThemeByName, initTheme, setThemeInstance } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { CardSources, type CardPreparation, type CardSourceHost, type SyntaxCardClient } from '../../../src/syntax/cards.ts';
 import type { CardDisplayInput } from '../../../src/cards/display-input.ts';
+import { filePreviewSource } from '../../../src/cards/file-input.ts';
 import type { PreparedCard, ReadyCardPaint, FlatRangeReader } from '../../../src/rendering/card-values.ts';
 import { DataBudget, DataCharge } from '../../../src/resources/data-budget.ts';
 import type { DiagnosticSink } from '../../../src/diagnostics.ts';
@@ -1025,7 +1026,27 @@ test('cards successful write and logical file preparation reuse existing saved d
 });
 
 
-test('file preview accounting and display never scan beyond the raw source or diff prefix', () => {
+test('file preview collects complete physical rows within the original UTF-16 limit', () => {
+  assert.deepEqual(filePreviewSource('a\r\nb\rc\nTAIL', 7), { text: 'a\nb\nc', omitted: true });
+  assert.deepEqual(filePreviewSource('a\r\nTAIL', 2), { text: 'a', omitted: true }, 'a CR at the cut is a row terminator');
+  assert.deepEqual(filePreviewSource('a\n\nxyz', 4, 2), { text: 'a', omitted: true });
+  assert.deepEqual(filePreviewSource('a\n\n\nxyz', 5, 2), { text: 'a\n', omitted: true });
+  assert.deepEqual(filePreviewSource('🦊TAIL', 1), { text: '', omitted: true }, 'never show a cut surrogate or incomplete row');
+  assert.deepEqual(filePreviewSource('a\nb\n', 4, 2), { text: 'a\nb', omitted: false });
+  assert.deepEqual(filePreviewSource('a\nb\n\n', 5, 2), { text: 'a\nb', omitted: true });
+  const prefix = 'a\n'.repeat(10), source = prefix + 'X'.repeat(30000);
+  const read = String.prototype.charCodeAt;
+  let units = 0, preview: ReturnType<typeof filePreviewSource>;
+  String.prototype.charCodeAt = function(index: number) {
+    if (String(this) === source) units++;
+    return read.call(this, index);
+  };
+  try { preview = filePreviewSource(source); } finally { String.prototype.charCodeAt = read; }
+  assert.deepEqual(preview, { text: prefix.slice(0, -1), omitted: true });
+  assert.equal(units, prefix.length, 'after the tenth complete row the collector does not inspect the long eleventh row');
+});
+
+test('file preview accounting and row construction never scan beyond the raw source or diff prefix', () => {
   const f = fixture(), owner = {};
   const source = 'VISIBLE_SOURCE\n' + 'x'.repeat(16_384) + '\nHIDDEN_SOURCE_SUFFIX';
   const diff = Array.from({ length: 1200 }, (_, i) => `+${i + 1} visible_${i + 1}`).join('\n') + '\n+1201 HIDDEN_DIFF_SUFFIX';

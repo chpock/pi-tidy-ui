@@ -29,7 +29,7 @@ import { samplePiCardPalette } from '../../../src/syntax/pi-palette.ts';
 import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/menu-driver.ts';
 import { ExtensionSettings, themePreferenceFromSettings, type SettingsLoadResult, type SettingsPatch, type SettingsSaveResult, type LocalPreferences } from '../../../src/settings.ts';
-import { FilePreviewState } from '../../../src/presentation/file-preview-state.ts';
+import { ToolCallStates } from '../../../src/presentation/tool-call-state.ts';
 import { FileDetails } from '../../../src/presentation/file-details.ts';
 import { PreparedLayoutPresenter } from '../../../src/presentation/prepared-layout-presenter.ts';
 import { RenderCache } from '../../../src/render-cache.ts';

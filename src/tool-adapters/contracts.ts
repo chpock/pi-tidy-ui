@@ -1,5 +1,5 @@
 import type { BashService } from '../rendering/card-values.ts';
-import type { FileCardInput, PreparedFileCard } from '../cards/file-model.ts';
+import type { FileCardInput, FileChangeClass, PreparedFileCard } from '../cards/file-model.ts';
 import type { FilePreviewMode } from '../cards/file-preview-mode.ts';
 
 export interface SavedToolResult {
@@ -64,7 +64,9 @@ export interface FileToolReader {
   language(): string | undefined;
   summaryArgs(): Record<string, unknown>;
   estimateBytes(context: ReaderEstimateContext): number;
-  prepareFile(mode: FilePreviewMode, logicalOnly?: boolean): PreparedFileCard | undefined;
+  changeIdentity?(): readonly unknown[];
+  classifyChange?(): FileChangeClass | null;
+  prepareFile(mode: FilePreviewMode, logicalOnly?: boolean, knownChange?: FileChangeClass): PreparedFileCard | undefined;
   pendingDetail(mode: FilePreviewMode): PendingFileDetail;
   errorSources(): Iterable<FileDetailSource>;
 }

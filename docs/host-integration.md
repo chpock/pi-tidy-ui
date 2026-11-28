@@ -142,6 +142,8 @@ For that specific clear:
 3. recheck actual attachment against the stable TUI;
 4. retain synchronously transferred owners; release only genuinely detached subtrees.
 
+Call facts and the manual file view choice follow a retained owner. If Pi updates a tool during the move, attachment refreshes its observed inputs and invalidates the old display before it can be reused. A later view is prepared through the ordinary demand path.
+
 This is neither a grace-period cache nor a timed session handoff. Appearance Off, failure and unload still release immediately. Parent/index observations are weak-keyed by child and repair stale positions from current native children; each live record holds its parent strongly. They do not create a second strong registry of children. See [layout ownership](render-cache-spec.md#invalidation-and-ownership) and [syntax work ownership](syntax/work.md).
 
 ## Semantic events and snapshots

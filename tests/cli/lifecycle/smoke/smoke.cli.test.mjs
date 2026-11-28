@@ -157,10 +157,9 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       const nativeReplay = await start('stock-replay', { session, workspace: stock.work });
       const native = await nativeReplay.capture('collapsed');
       await nativeReplay.close();
-      for (const [name, heading] of [['write', 'Write'], ['edit', 'Edit']]) {
+      for (const [name, heading] of [['write', 'Wrote'], ['edit', 'Edited']]) {
         const rendered = byName(resumed, name)[0].lines.map(plain).join('\n');
         assert.match(rendered, new RegExp(`← ${heading} written\\.txt`, 'u'), `${name} restores as the selected bounded preview`);
-        assert.doesNotMatch(rendered, new RegExp(`← ${name === 'write' ? 'Wrote' : 'Edited'} written\\.txt`, 'u'));
       }
       assert.ok(byName(resumed, 'write')[0].lines.map(plain).join('\n').includes('WRITE_BEFORE'));
       assert.ok(byName(resumed, 'edit')[0].lines.map(plain).join('\n').includes('WRITE_AFTER'));
@@ -175,10 +174,14 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
           `explicit expansion restores the complete saved ${name} rows and physical styling rather than comparing with preview`);
       assert.deepEqual(persisted(replayFull), persisted(beforeReplay));
       replay.send('\x0f'); await replay.settle();
-      await until(() => ['Write written.txt', 'Edit written.txt'].every(text => replay.screen().some(row => row.includes(text))), 'bounded saved preview after collapsing');
       const replayCollapsed = await replay.capture('recollapsed');
       compact(replayCollapsed);
-      assert.match(byName(replayCollapsed, 'write')[0].lines.map(plain).join('\n'), /← Write written\.txt/u);
+      assert.ok(replayCollapsed.tools.every(tool => !tool.expanded), 'Ctrl+O restores Pi compact mode');
+      for (const [name, heading] of [['write', 'Wrote'], ['edit', 'Edited']]) {
+        const rows = dump => byName(dump, name)[0].lines.map(row => plain(row).trimEnd());
+        assert.deepEqual(rows(replayCollapsed), rows(resumed), `${name} restores the same bounded preview and heading`);
+        assert.ok(replayCollapsed.screen.some(row => row.includes(`← ${heading} written.txt`)), `${name} retains the result heading on screen`);
+      }
       await replay.appearance(false); const disabledReplay = await replay.capture('disabled');
       assert.deepEqual(disabledReplay.tools.map((t) => t.lines), native.tools.map((t) => t.lines), 'disable restores exact same-session stock rendering');
       await replay.close();

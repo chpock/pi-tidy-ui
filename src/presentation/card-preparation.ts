@@ -1,10 +1,11 @@
+import type { FileChangeClass } from '../cards/file-model.ts';
 import type { CardDisplayInput } from '../cards/display-input.ts';
 import type { PreparedCard, ReadyCardPaint } from '../rendering/card-values.ts';
 
 /** Per-card consumer of the existing preparation owner, not SOURCE execution. */
 export interface CardPreparationPort<Owner extends object> {
   /** Cold lifecycle boundary; never construct a display during render or hit-testing. */
-  updateDisplay: (owner: Owner, input: CardDisplayInput) => boolean;
+  updateDisplay: (owner: Owner, input: CardDisplayInput, observeChange?: (value: FileChangeClass | null) => void) => boolean;
   useful: (owner: Owner, revision: number) => void;
   pause: (owner: Owner) => void;
   freeze: (owner: Owner) => void;

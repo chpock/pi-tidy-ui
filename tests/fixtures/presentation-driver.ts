@@ -2,6 +2,7 @@
 // Native integration and clean installed-package controls use their own providers.
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import tidyUi from '../../src/index.ts';
+import { CardSources } from '../../src/syntax/cards.ts';
 import { DeferredRenderer } from '../../src/host/pi/lazy-native-renderers.ts';
 import { createSyntaxOptions } from '../../src/application/syntax-options.ts';
 import { ExpectedOwnedUnavailable } from '../../src/occipital/owned-startup.ts';
@@ -40,7 +41,28 @@ export function observeDeferredNativePreparation(record: (event: unknown) => voi
   };
 }
 
+function observeFileCallWork(record: (event: unknown) => void): () => void {
+  const update = CardSources.prototype.updateDisplay;
+  const observed: typeof update = function(this: CardSources<object>, owner, input, reportChange) {
+    if (input.kind !== 'file' || input.reader.kind !== 'write') return update.call(this, owner, input, reportChange);
+    const reader = input.reader, prepare = reader.prepareFile;
+    reader.prepareFile = (mode, logicalOnly, known) => {
+      record({ type: 'test_file_build', call: reader.call.id, mode, known: known ?? null });
+      return prepare(mode, logicalOnly, known);
+    };
+    try { return update.call(this, owner, input, reportChange && (value => {
+      record({ type: 'test_file_class', call: reader.call.id, value });
+      reportChange(value);
+    })); }
+    finally { reader.prepareFile = prepare; }
+  };
+  CardSources.prototype.updateDisplay = observed;
+  return () => { if (CardSources.prototype.updateDisplay === observed) CardSources.prototype.updateDisplay = update; };
+}
+
 export default function presentationDriver(pi: ExtensionAPI) {
+  if (process.env.TIDY_UI_TEST_FILE_CALL_WORK === '1')
+    pi.on('session_shutdown', observeFileCallWork(createEventRecorder(process.env.TIDY_UI_TEST_OUTPUT!)));
   if (process.env.TIDY_UI_TEST_WRITE_CAPTURE === '1') {
     const record = createEventRecorder(process.env.TIDY_UI_TEST_OUTPUT!);
     const gate = createWriteCaptureGate(event => record({ type: 'write_source_state', ...event }));

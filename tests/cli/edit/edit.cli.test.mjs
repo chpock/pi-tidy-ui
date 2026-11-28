@@ -6,7 +6,7 @@ import test from 'node:test';
 import { PiTerminal, artifacts, plain, lines, toolLines, assertFits, deferredNativePreparation } from '../../fixtures/terminal-harness.mjs';
 import { replayBlockStart, compareEditReplayColors } from '../../fixtures/edit-replay-comparator.mjs';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
-import { Terminal, compactContent, persisted, referenceCell } from '../../fixtures/main-cli-support.mjs';
+import { Terminal, compactContent, persisted, referenceCell, sgrAt } from '../../fixtures/main-cli-support.mjs';
 import { cardGeometry } from '../../../src/card-frame.ts';
 import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
 
@@ -72,8 +72,8 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       compareEditReplayColors(actual, expected, await fg(actual, 'mdCodeBlock'), expandedErrors ? [2, 3] : []);
     const checkPreview = async (dump, evidence) => {
       const rows = lines(dump.tools[0]), text = rows.join('\n');
-      assert.match(text, /← Edit edit-example\.ts/);
-      assert.doesNotMatch(text, /← Edited edit-example\.ts|const context17 =/);
+      assert.match(text, /← Edited edit-example\.ts/);
+      assert.doesNotMatch(text, /const context17 =/);
       assert.match(text, /const before = 10/);
       assert.match(text, /const after = 20/);
       assert.match(text, /Click to expand/);
@@ -282,15 +282,18 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       const successful = await preparedCapture(live, 'before-successful-click');
       const successY = successful.screen.findIndex((row) => row.includes('← Edited edit-example.ts') && row.includes('┃'));
       assert.ok(successY >= 0);
-      live.send(`\x1b[<0;8;${successY + 1}M\x1b[<0;8;${successY + 1}m`); await live.settle();
+      await sgrAt(live, 7, successY);
       const successClicked = await live.capture('successful-click');
       assert.equal(successClicked.tools[0].expanded, false, 'a completed owned-card click changes only its file view, not Pi expansion state');
       assert.equal(successClicked.tools[1].expanded, false);
-      assert.match(lines(successClicked.tools[0]).join('\n'), /← Edit edit-example\.ts/);
-      assert.doesNotMatch(lines(successClicked.tools[0]).join('\n'), /← Edited edit-example\.ts|const context17 =/);
-      const previewY = successClicked.screen.findIndex(row => row.includes('← Edit edit-example.ts') && row.includes('┃'));
-      assert.ok(previewY >= 0, 'the collapsed preview remains a real panel click target');
-      live.send(`\x1b[<0;8;${previewY + 1}M\x1b[<0;8;${previewY + 1}m`); await live.settle();
+      assert.match(lines(successClicked.tools[0]).join('\n'), /← Edited edit-example\.ts/);
+      assert.match(lines(successClicked.tools[0]).join('\n'), /Click to expand/u);
+      assert.doesNotMatch(lines(successClicked.tools[0]).join('\n'), /const context17 =/);
+      const previewRows = lines(successClicked.tools[0]).filter(Boolean).map(row => row.trimEnd());
+      const previewY = successClicked.screen.findIndex((_, start) => previewRows.every((row, offset) =>
+        plain(successClicked.screen[start + offset] ?? '').trimEnd() === row));
+      assert.ok(previewY >= 0, 'the exact collapsed panel is a physical click target even when another edit shares its heading');
+      await sgrAt(live, 7, previewY + previewRows.findIndex(row => row.includes('← Edited edit-example.ts')));
       const successFull = await preparedCapture(live, 'successful-click-full');
       assert.equal(successFull.tools[0].expanded, false);
       assert.deepEqual(successFull.tools[0].lines, wide.tools[0].lines, 'the same card can return to its complete owned presentation');
@@ -529,8 +532,7 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
       for (const mode of ['fullscreen', 'regular']) {
         const replay = await start(`minified-replay-${mode}`, { tidyUi: true, session: wide.session, workspace: stock.work, mode });
         const preview = await replay.capture('pointer-minified-preview');
-        assert.match(lines(preview.tools[0]).join('\n'), /← Edit edit-minified\.ts/);
-        assert.doesNotMatch(lines(preview.tools[0]).join('\n'), /← Edited edit-minified\.ts/);
+        assert.match(lines(preview.tools[0]).join('\n'), /← Edited edit-minified\.ts/);
         replay.send('\x0f'); await replay.settle();
         await replay.settle();
         const resumed = await replay.capture('pointer-minified-replayed'); check(resumed);

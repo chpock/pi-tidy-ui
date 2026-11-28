@@ -1,4 +1,5 @@
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
+import type { FileChangeClass } from '../cards/file-model.ts';
 import type { CardPreparationPort } from './card-preparation.ts';
 import type { FileDetailDraft } from './file-details.ts';
 import type { ToolFieldAccessors, ToolProducerPresenter } from './tool-producers.ts';
@@ -83,7 +84,7 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
   ports: ToolPreparationPorts<Owner, Input>,
 ): ToolPreparationPresenter<Owner> {
   const { fields, producer, sessions, policy, routing, cards, ensureCards, facts, palette } = ports;
-  const fileDetails = sessions.fileDetails, filePreviewState = sessions.filePreview;
+  const fileDetails = sessions.fileDetails, filePreviewState = sessions.calls;
   const filePresentationTool = (node: Owner) => policy.filePresentationTool(node);
   const fileMode = (node: Owner) => policy.fileMode(node);
   const filePreviewMode = (node: Owner) => policy.filePreviewMode(node);
@@ -118,7 +119,7 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     state.live = live;
     // Pi may reparse unchanged arguments. Compare only the shallow fields, never the result or source preparation.
     if (state.unreflected !== 'bash-update') {
-      const changed = bash && (update === true || update && !equalArguments(update, fields.args(node)));
+      const changed = bash && (update === true || update && !equalArguments(update, producer.capture(node).args));
       state.unreflected = changed ? 'bash-update' : 'refresh';
     }
     cancelPreparedRefresh(state);
@@ -155,7 +156,7 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     if (reader.kind === 'bash') {
       const cwd = facts.cwd(node);
       return policy.bashSourceSelected(node) && reader.hasCommand() && reader.directory(cwd) !== null
-        && !fields.result(node)?.content!.some(part => part.type === 'image');
+        && !producer.hasImage(node);
     }
     if (reader.kind === 'read') {
       if (policy.readPresentationMode(node) !== 'full' || !reader.succeeded) return false;
@@ -203,28 +204,30 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     } else {
       const previous = state?.fileInput;
       const sourceDirty = sessions.takeFileSourcesDirty(node);
-      const sameObservation = previous && previous.reader.argsRef === reader.argsRef && previous.reader.resultRef === reader.resultRef
-        && previous.reader.call.partial === reader.call.partial && previous.reader.call.expanded === reader.call.expanded
-        && previous.reader.call.executionStarted === reader.call.executionStarted && previous.reader.call.argsComplete === reader.call.argsComplete;
-      const reusable = sameObservation && !sourceDirty && previous.source.mode === viewMode;
+      const sameCall = previous?.reader.call.id === reader.call.id && previous.reader.call.name === reader.call.name;
+      const reusable = previous?.reader === reader && !sourceDirty && previous.source.mode === viewMode;
       const source = reusable ? previous.source : { mode: viewMode!, key: reader.source(viewMode!) };
       const diagnostics = reusable ? previous.diagnostics : reader.diagnostics(viewMode!);
-      const token = previous && sameFileSource(previous.source, source) ? previous.token : {};
-      const activeReader = reusable ? previous.reader : reader;
-      fileInput = { reader: activeReader, source, diagnostics, token };
-      identity = [activeReader.kind, token, viewMode];
-      service = [...activeReader.service(cwd, viewMode!), ...(Array.isArray(diagnostics) ? diagnostics : [diagnostics])];
+      const token = sameCall && sameFileSource(previous.source, source) ? previous.token : {};
+      fileInput = { reader, source, diagnostics, token };
+      identity = [reader.kind, token, viewMode];
+      service = [...reader.service(cwd, viewMode!), ...(Array.isArray(diagnostics) ? diagnostics : [diagnostics])];
     }
     const readerChanged = !!fileInput && (state?.fileInput?.reader.argsRef !== fileInput.reader.argsRef
       || state?.fileInput?.reader.resultRef !== fileInput.reader.resultRef);
     if (state && fileInput) state.fileInput = fileInput;
+    const knownChange = fileInput ? producer.fileChange(node) : undefined;
+    const preview = fileInput?.source.mode === 'preview';
+    const classifyChange = fileInput !== undefined && knownChange === undefined && fileInput.reader.changeIdentity !== undefined
+      && (!preview || fileInput.reader.classifyChange !== undefined);
+    if (preview) service.push(knownChange);
     const input = palette.needsInput() ? palette.input() : undefined;
     const mode = input?.mode ?? palette.mode();
     const generation = palette.generation(input);
     const changed = !state || !equalIdentity(identity, state.identity), serviceChanged = !state || !equalIdentity(service, state.service);
     if (!state) { state = { attempt: 0, revision: 0, sourceRevision: 0, serviceRevision: 0, identity: [], service: [], palette: generation, mode, complete: false, applied: false, live: liveBashSource(node) }; sessions.setSyntax(node, state); }
     const complete = reader.kind === 'bash' ? reader.isComplete(liveBashSource(node)) : true;
-    if (!state.applied || state.paintRetry || readerChanged || changed || serviceChanged || state.palette !== generation || state.mode !== mode || complete !== state.complete) {
+    if (!state.applied || state.paintRetry || readerChanged || changed || serviceChanged || classifyChange || state.palette !== generation || state.mode !== mode || complete !== state.complete) {
       const wasPaintRetry = state.paintRetry === true;
       const unchangedDisplay = state.applied && !changed && !serviceChanged
         && state.palette === generation && state.mode === mode && complete === state.complete;
@@ -233,12 +236,18 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
       const common = { revision: unchangedDisplay ? state.revision : attempt, sourceRevision: changed ? attempt : state.sourceRevision,
         serviceRevision: serviceChanged ? attempt : state.serviceRevision, palette: generation, mode };
       state.applied = false;
+      const classificationKey = classifyChange ? fileInput?.reader.changeIdentity?.() : undefined;
+      let nextChange: FileChangeClass | null | undefined;
       const accepted = reader.kind === 'bash'
         ? owner.updateDisplay(node, { ...common, kind: 'bash', reader, complete, directory })
         : owner.updateDisplay(node, { ...common, kind: 'file', reader: fileInput!.reader, diagnostics: fileInput!.diagnostics,
-          viewMode: viewMode!, cwd });
+          viewMode: viewMode!, cwd, knownChange }, classificationKey ? value => { nextChange = value; } : undefined);
       if (sessions.syntax(node) !== state || state.attempt !== attempt) return;
       if (!facts.workActive()) return deferObservation(node, pendingBashUpdate ? true : update);
+      if (classificationKey && nextChange !== undefined && facts.attached(node)) {
+        producer.acceptFileChange(node, fileInput!.reader, classificationKey, nextChange);
+        if (preview) service[service.length - 1] = nextChange;
+      }
       if (!accepted) {
         if (filePresentationTool(node)) {
           if (viewMode === 'full') discardFullFile(node);

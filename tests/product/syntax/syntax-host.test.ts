@@ -561,7 +561,7 @@ test('host keyed notices retire only affected layout while metadata upgrades eve
 
 test('same-object image invalidation relinquishes a previously owned file card to the native renderer', () => {
   const f = fixture(), tool = written(f, 'IMAGE_GUARD_SOURCE');
-  const owned = plain(f.render(tool)); assert.ok(owned.some(row => row.includes('← Write')));
+  const owned = plain(f.render(tool)); assert.ok(owned.some(row => row.includes('← Wrote')));
   const native = plain(nativeToolRender.call(tool, 60));
   tool.result!.content.push({ type: 'image' }); tool.invalidate();
   assert.deepEqual(plain(f.render(tool)), native);
@@ -1348,6 +1348,14 @@ for (const kind of ['write', 'edit'] as const) test(`host ${kind} palette switch
   assert.equal(f.env.pi.length, 0);
 });
 
+function assertReturnedPreview(before: string[], full: string[], after: string[], message: string) {
+  const heading = /← (?:Wrote|Edited) a\.ts/u;
+  const title = before.find(row => heading.test(row));
+  assert.ok(title, 'cold preview already has its validated heading');
+  assert.equal(title, full.find(row => heading.test(row)), 'full view uses the same heading');
+  assert.deepEqual(after, before, message);
+}
+
 for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} preview→full→preview preserves cached Pi colors`, async t => {
   const f = fixture();
   const tool = kind === 'write' ? written(f, 'const n = 1') : f.tool('edit', { path: 'a.ts', oldText: 'const n = 1', newText: 'const n = 2' });
@@ -1360,7 +1368,7 @@ for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} previe
   assert.ok(await hasHostInk(full, themes.theme, 'syntaxKeyword', 'const'), 'full owned view keeps prepared Pi paint');
   assert.match(plain(full).join('\n'), /const n = 1/);
   tool.setExpanded(false); f.render(tool); await settled();
-  assert.deepEqual(f.render(tool), before, 'the preview returns to its exact cached ANSI rows');
+  assertReturnedPreview(before, full, f.render(tool), 'the preview body returns to its exact cached ANSI');
   assert.equal(f.env.pi.length, classifications, 'the mode round trip cannot repeat Pi classification');
   assert.equal(f.calls.length, sourceCalls, 'the mode round trip cannot dispatch source work');
 });
@@ -1380,7 +1388,7 @@ for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} previe
   assert.ok(await hasHostInk(full, themes.theme, 'syntaxKeyword', 'const'), 'full view uses retained local paint while jobs are held');
   assert.match(plain(full).join('\n'), kind === 'write' ? /const n = 1/ : /const n = 1[\s\S]*const n = 2/);
   tool.setExpanded(false); f.render(tool); await settled(); await settled();
-  assert.deepEqual(f.render(tool), before, 'the preview returns to exact paint without waiting for unrelated native credit');
+  assertReturnedPreview(before, full, f.render(tool), 'the preview body returns to exact paint without waiting for unrelated native credit');
   assert.equal(f.calls.length, dispatched); assert.equal(f.env.pi.length, pi); assert.equal(f.sources.stats().globalUnsettledJobs, 2);
 });
 
@@ -1410,7 +1418,7 @@ for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} owned 
   assert.match(plain(full).join('\n'), kind === 'write' ? /const n = 1/ : /const n = 1[\s\S]*const n = 2/);
   assert.ok(await hasKeywordInk(full), 'the full owned card keeps the exact selected keyword binding RGB, not neutral code ink');
   tool.setExpanded(false); f.render(tool); await settled(); await settled();
-  assert.deepEqual(f.render(tool), before, 'the preview returns to exact owned-palette ANSI rows');
+  assertReturnedPreview(before, full, f.render(tool), 'the preview body returns to exact owned-palette ANSI');
   assert.equal(f.calls.length, dispatched, 'mode round trip dispatches no additional SOURCE');
   assert.equal(f.env.pi.length, pi, 'owned mode round trip does not invoke Pi classification');
   assert.equal(f.env.styleRequests.length, styleRequests, 'mode round trip adds no STYLE work');
@@ -2155,7 +2163,7 @@ test('compatible third-party file renderers keep file cards while self-shell vis
   nativeCall.render = (width) => { nativeCallRenders++; return renderNativeCall(width); };
   const mixedCallsBeforePresentation = mixedResult;
   const mixedRows = plain(f.render(mixed, 80)).join('\n');
-  assert.match(mixedRows, /← Write mixed-write\.ts/u, 'a mixed stock/third-party pair retains the compatible preview');
+  assert.match(mixedRows, /← Wrote mixed-write\.ts/u, 'a mixed stock/third-party pair retains the compatible preview');
   assert.match(mixedRows, /1 const mixed = 1;/u, 'the bounded source rows remain visible');
   assert.equal(mixed.getResultRenderer(), foreignResult, 'mixed-pair callback is not wrapped or removed');
   assert.equal(mixedResult, mixedCallsBeforePresentation, 'the custom file card does not add foreign result-render work');
@@ -2201,7 +2209,8 @@ test('native and hidden file successes consume rolling recency without changing 
       if (typeof value !== 'string') throw new TypeError(`Expected ${name} to be a string`);
       return value;
     };
-    for (let i = 0; i < 9; i++) entries.push(f.tool('write', { path: `window-${i}.ts`, content: `const window_${i} = ${i};` }));
+    for (let i = 0; i < 9; i++) entries.push(f.tool('write', { path: `window-${i}.ts`,
+      content: Array.from({ length: 12 }, (_, row) => `const window_${i}_row_${row} = ${i};`).join('\n') }));
     const native = f.tool('edit', { path: 'window-native.ts', edits: [{ oldText: 'before', newText: 'after' }] });
     entries.push(native);
     for (const tool of entries) f.render(tool, 80);
@@ -2240,11 +2249,13 @@ test('native and hidden file successes consume rolling recency without changing 
     await settled();
     const views = automatic.map(tool => plain(f.render(tool, 80)).join('\n'));
     for (const index of [0, 1, 2]) {
-      assert.match(views[index]!, new RegExp(`Write window-${index}\\.ts`), `older successful write ${index} must be demoted by all later calls`);
-      assert.doesNotMatch(views[index]!, new RegExp(`Wrote window-${index}\\.ts`));
+      assert.match(views[index]!, new RegExp(`Wrote window-${index}\\.ts`), 'demotion preserves the known heading');
+      assert.doesNotMatch(views[index]!, new RegExp(`window_${index}_row_11`), `older successful write ${index} must be demoted by all later calls`);
     }
     for (const index of [3, 4, 5, 6, 7, 8, 9, 10, 11]) assert.match(views[index]!, /Wrote window-/,
-      `the ten most recent successes, including native and hidden calls across turns, remain in the automatic full window: ${index}`);
+      `classified heading for the remaining visible writes: ${index}`);
+    for (const index of [3, 4, 5, 6, 7, 8]) assert.match(views[index]!, new RegExp(`window_${index}_row_11`),
+      `a saved write inside the latest-ten window retains its full body: ${index}`);
   } finally { f.adapter.restore(); }
 });
 
